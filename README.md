@@ -45,7 +45,7 @@ Known inherited limitations:
 - Arbitrary file creation is not supported
 - Arbitrary file duplication is not supported
 - Direct editing of .yml/.txt files through the file browser is not supported
-- Province map analysis appears non-functional in both the original Chrome version and this Firefox port
+- Province map analysis appears inconsistent in being functional in both the original Chrome version and this Firefox port
 
 ## Development Notes
 
