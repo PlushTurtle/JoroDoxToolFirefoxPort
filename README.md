@@ -47,6 +47,12 @@ Known inherited limitations:
 - Direct editing of .yml/.txt files through the file browser is not supported
 - Province map analysis appears non-functional in both the original Chrome version and this Firefox port
 
+## Development Notes
+
+AI-assisted tools were used during development of the Firefox port. All changes were manually reviewed and tested against the original JoroDox behaviour where possible.
+
+Validation included import, export, save/reopen workflows, large real-world mod testing, mesh tools, file viewing, and Firefox-specific compatibility testing.
+
 ## License
 
 This project remains licensed under the MIT License.
