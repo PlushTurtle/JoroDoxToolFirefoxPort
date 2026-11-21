@@ -30,7 +30,7 @@ This fork modernises the project for Firefox WebExtensions while preserving the 
 
 ## Firefox Port Status
 
-Tested on Firefox 160.0.1.
+The declared minimum is Firefox 140.0, required for the manifest's `data_collection_permissions` declaration. Manual functional validation has been performed on Firefox 160.0.1; Firefox 140.0 has not been separately tested.
 
 Verified features include:
 
