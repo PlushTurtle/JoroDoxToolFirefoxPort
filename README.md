@@ -10,6 +10,8 @@ The original JoroDox project was released as an open-source modding tool for Par
 
 https://github.com/DaanBroekhof/JoroDox
 
+https://chromewebstore.google.com/detail/jorodox-tools/pmhbboeiannanamjandkhiakpaaoecoo
+
 https://forum.paradoxplaza.com/forum/threads/tool-jorodox-mod-making-tool.831597/
 
 This fork modernises the project for Firefox WebExtensions while preserving the original functionality and workflow where possible.
