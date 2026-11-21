@@ -1,8 +1,13 @@
 var myMod = angular.module('JoroDox', [
 	'ui.bootstrap', 'ui.router', 'ui.layout', 'ui.tree',
 	'panzoom', 'panzoomwidget', 'cfp.hotkeys',
-	'modService', 'mapAnalyzeService', 'mapDrawService', 'pdxDataService', 'pdxScriptService', 'rendererService'
+	'modService', 'mapAnalyzeService', 'mapDrawService', 'pdxDataService', 'pdxScriptService', 'rendererService',
+	'digestDiagnostics'
 ]);
+
+myMod.run(['$rootScope', 'digestDiagnostics', function ($rootScope, digestDiagnostics) {
+	digestDiagnostics.install($rootScope);
+}]);
 
 myMod.filter('commentFilter', function() {
 	return function(input) {
@@ -635,31 +640,53 @@ myMod.controller('LoadMod', ['$scope', 'modService', '$state', function ($scope,
 	$scope.mods = [];
 
 	$scope.chooseModRootDir = function () {
-		window.showDirectoryPicker({ mode: 'readwrite' }).then( ( handle ) => {
-			modService.setRootFileEntry(handle).then(function () {
+		modService.selectProject().then(function (project) {
+			modService.setRootFileEntry(project).then(function () {
 				$scope.loadPreviousModData();
+			}, function (error) {
+				modService.showMessage({title: 'Could not load mod directory', text: error.message || String(error)});
 			});
+		}, function (error) {
+			if (error && error.name == 'AbortError')
+				return;
+			modService.showMessage({title: 'Could not open mod directory', text: error.message || String(error)});
 		});
 	};
 
 	$scope.loadPreviousModData = function () {
 		modService.getPreviousModData().then(function (mods) {
 			$scope.mods = mods;
+		}, function (error) {
+			modService.showMessage({title: 'Could not load cached mods', text: error.message || String(error)});
 		});
 	};
 
 	$scope.deleteModData = function (modData) {
-		modService.getStorage().then(function (storage) {
-			// Remove from storage
-			storage.remove(modData.id, function () {
+		modService.deleteModData(modData).then(function () {
 				$scope.loadPreviousModData();
-			});
+			}, function (error) {
+				modService.showMessage({title: 'Could not remove cached mod', text: error.message || String(error)});
 		});
 	};
 
 	$scope.loadModData = function (modData) {
 		modService.loadModData(modData.id).then(function () {
 			$state.go('inspect');
+		});
+	};
+
+	$scope.exporting = false;
+	$scope.exportProgress = 0;
+	$scope.exportModZip = function () {
+		$scope.exporting = true;
+		$scope.exportProgress = 0;
+		modService.exportModZip(function (percent) {
+			$scope.exportProgress = percent;
+		}).then(function () {
+			$scope.exporting = false;
+		}, function (error) {
+			$scope.exporting = false;
+			modService.showMessage({title: 'Could not export mod', text: error.message || String(error)});
 		});
 	};
 
@@ -2037,8 +2064,17 @@ myMod.controller('AboutPage', ['$scope', function ($scope) {
 // Contents page
 myMod.controller('ContentsPage', ['$scope', 'modService', function ($scope, modService) {
 	$scope.requestModRootDirAccess = function () {
-		modService.requestRootAccess().then( () => {
-			modService.refreshOpenDirectories();
+		modService.requestRootAccess().then(function () {
+			return modService.refreshOpenDirectories();
+		}).catch(function (error) {
+			modService.showMessage({title: 'Could not access mod directory', text: error.message || String(error)});
+		});
+	}
+	$scope.reattachModSource = function () {
+		modService.attachSource().catch(function (error) {
+			if (error && error.name == 'AbortError')
+				return;
+			modService.showMessage({title: 'Could not reattach mod directory', text: error.message || String(error)});
 		});
 	}
 }]);

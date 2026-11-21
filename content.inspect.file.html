@@ -122,7 +122,7 @@
 			<span class="datatree-item-data" ng-show="dataNode && dataNode.value !== null">{{::dataSample(dataNode.value, node.treeDataType)}}{{::nodeData.nullByteString ? ' (null byte)' :''}}</span>
 			<span class="datatree-item-comments" ng-show="dataNode.comments"><span ng-repeat="c in dataNode.comments | commentFilter track by $index"># {{c}}<br /></span></span>
 		</div>
-		<ol ng-class="{hidden: collapsed}" ui-tree-nodes ng-model="dataNode.subNodes">
+		<ol ng-if="!collapsed" ui-tree-nodes ng-model="dataNode.subNodes">
 			<li ng-repeat="dataNode in dataNode.subNodes" ui-tree-node ng-include="'datanodes_renderer.html'" data-collapsed="true">
 			</li>
 		</ol>

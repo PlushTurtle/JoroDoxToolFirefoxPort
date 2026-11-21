@@ -2035,7 +2035,7 @@ module.factory('rendererService', ['$rootScope', '$q', 'modService', '$filter', 
 						if (!label.div)
 						{
 							label.div = document.createElement('div');
-							label.div.innerHTML = label.text;
+							label.div.textContent = label.text;
 							label.div.style.position = 'absolute';
 							container.children[0].appendChild(label.div);
 						}

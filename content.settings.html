@@ -7,6 +7,11 @@
 	<div class="alert alert-warning" ng-if="!modService.data">
 		<em>- No mod loaded -</em>
 	</div>
+	<div ng-if="modService.data">
+		<button type="button" class="btn btn-success" ng-click="exportModZip()" ng-disabled="exporting || modService.data.mod.shouldReattachSource">Export Mod as ZIP</button>
+		<span ng-if="exporting">Preparing ZIP: {{exportProgress | number:0}}%</span>
+		<p ng-if="modService.data.mod.shouldReattachSource" class="text-warning">Re-select the source directory in Explore before exporting the complete mod.</p>
+	</div>
 
 	<button type="button" class="btn btn-primary" ng-click="chooseModRootDir()">Select Mod Directory</button>
 	(can also be the root directory of the game itself)

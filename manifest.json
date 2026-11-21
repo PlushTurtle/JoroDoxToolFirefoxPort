@@ -2,12 +2,13 @@
   "name": "JoroDox Tools",
   "version": "0.8.1",
   "description": "Tools to help mod Paradox Interactive's Grand Strategy video games.",
-  "page": "https://github.com/DaanBroekhof/JoroDox",
+  "homepage_url": "https://github.com/Gooblio800/JoroDoxToolFirefox",
   "manifest_version": 3,
-  "minimum_chrome_version": "88",
   "background": {
-    "service_worker": "backgroundServiceWorker.js",
-    "type": "module"
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": false
   },
   "action": {
     "default_icon": {
@@ -26,5 +27,15 @@
   },
   "permissions": [
     "storage"
-  ]
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "strict_min_version": "160.0.1",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  }
 }

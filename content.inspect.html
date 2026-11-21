@@ -43,6 +43,10 @@
 				<br />
 				<button type="button" class="btn btn-primary" ng-click="requestModRootDirAccess()">Enable Access</button>
 			</div>
+			<div class="alert alert-warning" ng-show="modService.data.mod.shouldReattachSource">
+				<p><b>Source directory not attached.</b> Re-select the original mod directory to read unchanged files and export the complete mod.</p>
+				<button type="button" class="btn btn-primary" ng-click="reattachModSource()">Re-select Source Directory</button>
+			</div>
 		</div>
 	</div>
 </div>
