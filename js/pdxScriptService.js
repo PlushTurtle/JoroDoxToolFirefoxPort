@@ -223,17 +223,21 @@ module.factory('pdxScriptService', ['$rootScope', function($rootScope) {
 
 			while (this.currentOffset < this.data.length)
 			{
-				if (comment == '' && (this.data[this.currentOffset] == ' ' || this.data[this.currentOffset] == "\t"))
-					; // Skip whitespace after '#'
-				else
-					comment += this.data[this.currentOffset]
-				this.currentOffset++;
-				if (this.data[this.currentOffset] == "\n")
+				var character = this.data[this.currentOffset];
+				if (character == "\n" || character == "\r")
 				{
 					this.currentOffset++;
+					if (character == "\r" && this.data[this.currentOffset] == "\n")
+						this.currentOffset++;
 					this.lineScope = null;
 					break;
 				}
+
+				if (comment == '' && (this.data[this.currentOffset] == ' ' || this.data[this.currentOffset] == "\t"))
+					; // Skip whitespace after '#'
+				else
+					comment += character;
+				this.currentOffset++;
 			}
 			scope.comments[this.currentLine] = comment;
 			this.currentLine++;

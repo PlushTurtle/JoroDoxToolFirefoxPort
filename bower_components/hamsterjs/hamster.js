@@ -227,18 +227,20 @@ Hamster.normalise = {
 
     // calculate deltaY (and deltaX) according to the event
 
-    // 'mousewheel'
-    if (originalEvent.wheelDelta) {
-      event.deltaY = - 1/40 * originalEvent.wheelDelta;
-    }
-    // webkit
-    if (originalEvent.wheelDeltaX) {
-      event.deltaX = - 1/40 * originalEvent.wheelDeltaX;
-    }
+    if (Hamster.SUPPORT !== 'wheel') {
+      // 'mousewheel'
+      if (originalEvent.wheelDelta) {
+        event.deltaY = - 1/40 * originalEvent.wheelDelta;
+      }
+      // webkit
+      if (originalEvent.wheelDeltaX) {
+        event.deltaX = - 1/40 * originalEvent.wheelDeltaX;
+      }
 
-    // 'DomMouseScroll'
-    if (originalEvent.detail) {
-      event.deltaY = originalEvent.detail;
+      // 'DomMouseScroll'
+      if (originalEvent.detail) {
+        event.deltaY = originalEvent.detail;
+      }
     }
 
     return event;

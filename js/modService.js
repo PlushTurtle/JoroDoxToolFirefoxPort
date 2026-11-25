@@ -4,6 +4,133 @@ var module = angular.module('modService', ['mapAnalyzeService', 'fileSystemAdapt
 
 module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnalyzeService', 'pdxScriptService', 'fileSystemAdapter', function($rootScope, $timeout, $modal, $q, mapAnalyzeService, pdxScriptService, fileSystemAdapter) {
 
+	var mapAnalysisTraces = [];
+	var nextMapAnalysisTraceId = 0;
+	var provinceHistoryReferenceDate = [1444, 11, 11];
+	var getProvinceHistoryDate = function (name) {
+		var match = /^(\d{1,4})\.(\d{1,2})\.(\d{1,2})$/.exec(name);
+		if (!match)
+			return null;
+		return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)];
+	};
+	var compareProvinceHistoryDates = function (a, b) {
+		for (var i = 0; i < 3; i++)
+		{
+			if (a[i] != b[i])
+				return a[i] - b[i];
+		}
+		return 0;
+	};
+	var getEffectiveProvinceData = function (province) {
+		var effectiveData = angular.copy(province.data && province.data.data || {});
+		var datedBlocks = [];
+		angular.forEach(province.data && province.data.subNodes, function (block, index) {
+			var date = getProvinceHistoryDate(block.name);
+			if (date && compareProvinceHistoryDates(date, provinceHistoryReferenceDate) <= 0)
+				datedBlocks.push({node: block, date: date, index: index});
+		});
+		datedBlocks.sort(function (a, b) {
+			return compareProvinceHistoryDates(a.date, b.date) || a.index - b.index;
+		});
+		angular.forEach(datedBlocks, function (block) {
+			angular.forEach(block.node.subNodes, function (property) {
+				effectiveData[property.name] = angular.copy(property.data);
+			});
+		});
+		return effectiveData;
+	};
+
+	var logMapAnalysisEvent = function (trace, stage, event, error) {
+		var prefix = '[map-analysis '+ trace.id +'] '+ trace.label +' #'+ (++trace.eventNumber) +' '+ stage +': ';
+		if (event == 'rejected')
+		{
+			console.error(prefix + event, error);
+			if (!trace.firstRejection)
+			{
+				trace.firstRejection = {stage: stage, error: error};
+				console.error('[map-analysis '+ trace.id +'] FIRST REJECTION at '+ stage, error);
+			}
+		}
+		else
+		{
+			console.info(prefix + event);
+		}
+	};
+
+	var traceMapAnalysisPromise = function (stage, operation) {
+		var traces = mapAnalysisTraces.slice();
+		if (!traces.length)
+			return operation();
+
+		angular.forEach(traces, function (trace) {
+			logMapAnalysisEvent(trace, stage, 'entry');
+		});
+
+		var promise;
+		try
+		{
+			promise = operation();
+		}
+		catch (error)
+		{
+			angular.forEach(traces, function (trace) {
+				logMapAnalysisEvent(trace, stage, 'rejected', error);
+				logMapAnalysisEvent(trace, stage, 'completion');
+			});
+			return $q.reject(error);
+		}
+
+		return $q.when(promise).then(function (result) {
+			angular.forEach(traces, function (trace) {
+				logMapAnalysisEvent(trace, stage, 'success');
+				logMapAnalysisEvent(trace, stage, 'completion');
+			});
+			return result;
+		}, function (error) {
+			angular.forEach(traces, function (trace) {
+				logMapAnalysisEvent(trace, stage, 'rejected', error);
+				logMapAnalysisEvent(trace, stage, 'completion');
+			});
+			return $q.reject(error);
+		});
+	};
+
+	var traceMapAnalysis = function (label, operation) {
+		var trace = {
+			id: ++nextMapAnalysisTraceId,
+			label: label,
+			eventNumber: 0,
+			firstRejection: null
+		};
+		console.info('[map-analysis '+ trace.id +'] '+ label +': entry');
+		mapAnalysisTraces.push(trace);
+
+		var promise;
+		try
+		{
+			promise = operation();
+		}
+		catch (error)
+		{
+			logMapAnalysisEvent(trace, 'analysis', 'rejected', error);
+			mapAnalysisTraces.splice(mapAnalysisTraces.indexOf(trace), 1);
+			logMapAnalysisEvent(trace, 'analysis', 'completion');
+			return $q.reject(error);
+		}
+
+		return $q.when(promise).then(function (result) {
+			logMapAnalysisEvent(trace, 'analysis', 'success');
+			mapAnalysisTraces.splice(mapAnalysisTraces.indexOf(trace), 1);
+			logMapAnalysisEvent(trace, 'analysis', 'completion');
+			return result;
+		}, function (error) {
+			logMapAnalysisEvent(trace, 'analysis', 'rejected', error);
+			mapAnalysisTraces.splice(mapAnalysisTraces.indexOf(trace), 1);
+			logMapAnalysisEvent(trace, 'analysis', 'completion');
+			return $q.reject(error);
+		});
+	};
+
 	var errorCallback = function (error) {
 		var modalInstance = $modal.open({
 			templateUrl: 'errorModal.html',
@@ -18,6 +145,7 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 
 	var modServiceInstance = {
 		'errorCallback': errorCallback,
+		traceMapAnalysis: traceMapAnalysis,
 		storage: null,
 		storagePromise: null,
 		data: null,
@@ -111,6 +239,32 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 				byLanguage: {},
 				languages: [],
 			},
+			common: {
+				religions: {
+					lastGenerated: null,
+					sourceFiles: [],
+					sourceDataNodes: [],
+					generateMethod: 'generateCommonColorDefinitions',
+					definitionPath: 'common/religions',
+					colorByName: {},
+				},
+				tradegoods: {
+					lastGenerated: null,
+					sourceFiles: [],
+					sourceDataNodes: [],
+					generateMethod: 'generateCommonColorDefinitions',
+					definitionPath: 'common/tradegoods',
+					colorByName: {},
+				},
+				governments: {
+					lastGenerated: null,
+					sourceFiles: [],
+					sourceDataNodes: [],
+					generateMethod: 'generateCommonColorDefinitions',
+					definitionPath: 'common/governments',
+					colorByName: {},
+				},
+			},
 			countries: {
 				tags: {
 					lastGenerated: null,
@@ -199,15 +353,7 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 				},
 				environment: {
 					lastGenerated: null,
-					sourceFiles: [
-						'map/default.map',
-						'map/climate.txt',
-						'map/continent.txt',
-						'map/region.txt',
-						'map/seasons.txt',
-						'map/terrain.txt',
-						//'map/trade_winds.txt',
-					],
+					sourceFiles: [],
 					byPath: {},
 					nodesByName: {},
 					generateMethod: 'generateMapEnvironment',
@@ -334,19 +480,21 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			}.bind(this));
 		},
 		getImage: function (dataNode) {
-			var deferred = $q.defer();
-			if (dataNode.imageCacheName in this.imageCache)
-			{
-				deferred.resolve(this.imageCache[dataNode.imageCacheName]);
-			}
-			else
-			{
-				loadImage(dataNode.imageBlob, function (img) {
-					this.imageCache[dataNode.imageCacheName] = img;
-					deferred.resolve(img);
-				}.bind(this), {noRevoke: true});
-			}
-			return deferred.promise;
+			return traceMapAnalysisPromise('decodeImage ('+ dataNode.imageCacheName +')', function () {
+				var deferred = $q.defer();
+				if (dataNode.imageCacheName in this.imageCache)
+				{
+					deferred.resolve(this.imageCache[dataNode.imageCacheName]);
+				}
+				else
+				{
+					loadImage(dataNode.imageBlob, function (img) {
+						this.imageCache[dataNode.imageCacheName] = img;
+						deferred.resolve(img);
+					}.bind(this), {noRevoke: true});
+				}
+				return deferred.promise;
+			}.bind(this));
 		},
 		/** @memberOf modService */
 		getStorage: function () {
@@ -765,41 +913,45 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			return deferred.promise;
 		},
 		getData: function (dataNode) {
-			if (!dataNode)
-				console.log('Unknown datanode!');
+			var label = dataNode && (dataNode.generateMethod || dataNode.sourceFiles) || 'unknown node';
+			return traceMapAnalysisPromise('getData ('+ label +')', function () {
+				if (!dataNode)
+					console.log('Unknown datanode!');
 
-			// Is already generating... wait for that
-			if ('generatePromise' in dataNode && dataNode.generatePromise)
-				return dataNode.generatePromise;
+				// Is already generating... wait for that
+				if ('generatePromise' in dataNode && dataNode.generatePromise)
+					return dataNode.generatePromise;
 
-			if (this.isNodeOutdatedQuick(dataNode))
-			{
-				dataNode.generatePromise = this.generateData(dataNode);
-
-				dataNode.generatePromise.then(function() {
-					dataNode.generatePromise = null;
-				});
-
-				return dataNode.generatePromise;
-			}
-			else
-			{
-				return $q.when(dataNode);
-			}
-
-			return this.isNodeOutdated(dataNode).then(function (isOutdated) {
-				if (!isOutdated)
-					return dataNode;
-				else
+				if (this.isNodeOutdatedQuick(dataNode))
 				{
 					dataNode.generatePromise = this.generateData(dataNode);
 
-					dataNode.generatePromise.then(function() {
+					var clearGeneratePromise = function() {
 						dataNode.generatePromise = null;
-					});
+					};
+					dataNode.generatePromise.then(clearGeneratePromise, clearGeneratePromise);
 
 					return dataNode.generatePromise;
 				}
+				else
+				{
+					return $q.when(dataNode);
+				}
+
+				return this.isNodeOutdated(dataNode).then(function (isOutdated) {
+					if (!isOutdated)
+						return dataNode;
+					else
+					{
+						dataNode.generatePromise = this.generateData(dataNode);
+
+						dataNode.generatePromise.then(function() {
+							dataNode.generatePromise = null;
+						});
+
+						return dataNode.generatePromise;
+					}
+				}.bind(this));
 			}.bind(this));
 		},
 		getDataMultiple: function (dataNodes) {
@@ -816,19 +968,23 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			var deferred = $q.defer();
 
 			if ('generateMethod' in dataNode)
-				return this.loadDependencies(dataNode).then(function () {
-					this.loadingState[dataNode.generateMethod] = true;
+				return traceMapAnalysisPromise('generateData ('+ dataNode.generateMethod +')', function () {
+					return this.loadDependencies(dataNode).then(function () {
+						this.loadingState[dataNode.generateMethod] = true;
 
-					return this[dataNode.generateMethod](dataNode);
-				}.bind(this)).then(function () {
-					dataNode.lastGenerated = new Date();
+						return this[dataNode.generateMethod](dataNode);
+					}.bind(this)).then(function () {
+						this.loadingState[dataNode.generateMethod] = false;
 
-					if (this[dataNode.generateMethod.replace('generate', 'link')])
-						this[dataNode.generateMethod.replace('generate', 'link')](dataNode);
+						if (this[dataNode.generateMethod.replace('generate', 'link')])
+							this[dataNode.generateMethod.replace('generate', 'link')](dataNode);
 
-					this.loadingState[dataNode.generateMethod] = false;
-
-					return dataNode;
+						dataNode.lastGenerated = new Date();
+						return dataNode;
+					}.bind(this), function (error) {
+						this.loadingState[dataNode.generateMethod] = false;
+						return $q.reject(error);
+					}.bind(this));
 				}.bind(this));
 			else
 				deferred.reject('Node `'+ dataNode +'` cannot generate data, no generateMethod set.');
@@ -872,33 +1028,47 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			}.bind(this));
 		},
 		loadDependencies: function (dataNode) {
-			var promises = [];
+			return traceMapAnalysisPromise('loadDependencies ('+ (dataNode.generateMethod || dataNode.sourceFiles || 'data node') +')', function () {
+				var promises = [];
 
-			if ('metadata' in dataNode)
-			{
-				promises.push(this.getMetadata(dataNode));
-			}
+				if ('metadata' in dataNode)
+				{
+					promises.push(this.getMetadata(dataNode));
+				}
 
-			if ('sourceDataNodes' in dataNode)
-			{
-				angular.forEach(dataNode.sourceDataNodes, function (sourceDataNode) {
-					promises.push(this.isNodeOutdated(sourceDataNode).then(function (isOutdated) {
-						if (isOutdated)
-							return this.generateData(sourceDataNode);
-					}.bind(this)));
-				}, this);
-			}
+				if ('sourceDataNodes' in dataNode)
+				{
+					angular.forEach(dataNode.sourceDataNodes, function (sourceDataNode) {
+						promises.push(this.isNodeOutdated(sourceDataNode).then(function (isOutdated) {
+							if (isOutdated)
+								return this.generateData(sourceDataNode);
+						}.bind(this)));
+					}, this);
+				}
 
-			if ('sourceFiles' in dataNode)
-			{
-				angular.forEach(dataNode.sourceFiles, function (sourceFile) {
-					promises.push(this.getFileNodeByPath(sourceFile));
-				}, this);
-			}
+				if ('sourceFiles' in dataNode)
+				{
+					angular.forEach(dataNode.sourceFiles, function (sourceFile) {
+						promises.push(this.getFileNodeByPath(sourceFile).catch(function (error) {
+							var isOptionalEnvironmentFile = [
+								'map/default.map',
+								'map/climate.txt',
+								'map/continent.txt',
+								'map/region.txt',
+								'map/seasons.txt',
+								'map/terrain.txt',
+							].indexOf(sourceFile) != -1;
+							if (error && error.name == 'NotFoundError' && !isOptionalEnvironmentFile)
+								console.error('[map-analysis] Missing mandatory file: '+ sourceFile, error);
+							return $q.reject(error);
+						}));
+					}.bind(this));
+				}
 
-			return $q.all(promises).then(function () {
-				return dataNode;
-			});
+				return $q.all(promises).then(function () {
+					return dataNode;
+				});
+			}.bind(this));
 		},
 		/** @memberOf modService */
 		requestRootAccess: function() {
@@ -911,19 +1081,23 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			var expectedKind = isDir || (this.data.fileSystem.byPath[path] && this.data.fileSystem.byPath[path].isDirectory)
 				? 'directory'
 				: undefined;
-			return fileSystemAdapter.getEntry(path, expectedKind).catch(function (error) {
-				if (error && error.code == 'permission-prompt')
-					this.data.mod.shouldRequestAccess = true;
-				if (ignoreExist && (error.name == 'NotFoundError' || error.name == 'InvalidModificationError'))
-					return false;
-				return $q.reject(error);
+			return traceMapAnalysisPromise('getEntry ('+ path +')', function () {
+				return fileSystemAdapter.getEntry(path, expectedKind).catch(function (error) {
+					if (error && error.code == 'permission-prompt')
+						this.data.mod.shouldRequestAccess = true;
+					if (ignoreExist && error && (error.name == 'NotFoundError' || error.name == 'InvalidModificationError'))
+						return false;
+					return $q.reject(error);
+				}.bind(this));
 			}.bind(this));
 		},
 		getFile: function (path, options) {
-			return fileSystemAdapter.readFile(path).catch(function (error) {
-				if (error && error.code == 'permission-prompt')
-					this.data.mod.shouldRequestAccess = true;
-				return $q.reject(error);
+			return traceMapAnalysisPromise('readFile ('+ path +')', function () {
+				return fileSystemAdapter.readFile(path).catch(function (error) {
+					if (error && error.code == 'permission-prompt')
+						this.data.mod.shouldRequestAccess = true;
+					return $q.reject(error);
+				}.bind(this));
 			}.bind(this));
 		},
 		/** @memberOf modService */
@@ -1114,31 +1288,46 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			}.bind(this));
 		},
 		'generateProvinceHistory': function (dataNode) {
-			return this.getFileNodeByPath(dataNode.sourceFiles[0]).then(function (node) {
-				return this.loadFileNodeDirectory(node);
+			var historyPath = dataNode.sourceFiles[0];
+			var getProvinceIdFromFileName = function (fileName) {
+				var normalizedName = String(fileName || '').trim();
+				if (!/\.txt$/i.test(normalizedName))
+					return null;
+				var match = /^([0-9]+)/.exec(normalizedName);
+				if (!match)
+					return null;
+				var id = parseInt(match[1], 10);
+				return isFinite(id) ? id : null;
+			};
+			return this.getFileEntry(historyPath, null, true, true).then(function (entry) {
+				if (!entry)
+				{
+					console.info('[map-analysis] Missing optional province history directory: '+ historyPath);
+					return {files: []};
+				}
+				return this.getFileNodeByPath(historyPath).then(function (node) {
+					return this.loadFileNodeDirectory(node);
+				}.bind(this));
 			}.bind(this)).then(function (node) {
 				var promises = [];
-				var idRegex = /^([0-9]+)\s*.*\.txt$/i;
 				dataNode.sourceDataNodes = [];
 				dataNode.byId.length = 0;
 				dataNode.provinceIds.length = 0;
 				for (var i = 0; i < node.files.length; i++)
 				{
 					var file = node.files[i];
-
-					var matches = idRegex.exec(file.name);
-
-					if (!matches)
+					var id = getProvinceIdFromFileName(file.name);
+					if (id === null)
 					{
 						console.log(file.path +' not a province history file.')
 						continue;
 					}
-					var id = parseInt(matches[1]);
 
 					promises.push(function (path, id) {
 						return this.getPdxScriptDataByPath(path).then(function (pdxDataNode) {
 							dataNode.byId[id] = pdxDataNode;
 							pdxDataNode._id = id;
+							pdxDataNode._effectiveData = getEffectiveProvinceData(pdxDataNode);
 							dataNode.provinceIds.push(id);
 							dataNode.sourceDataNodes.push(pdxDataNode);
 							pdxDataNode._addCores = [];
@@ -1157,12 +1346,97 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 					}.bind(this)(file.path, id));
 				}
 
-				return $q.all(promises).then(
-					function (results) {
-						return dataNode;
-					}.bind(this)
-				);
+				return $q.all(promises).then(function () {
+					var definitionPath = this.data.map.colorMapping.sourceFiles[0];
+					return this.getFileEntry(definitionPath, null, true).then(function (entry) {
+						if (!entry)
+						{
+							console.warn('[map-analysis] Cannot create fallback province records; missing definition file: '+ definitionPath);
+							return dataNode;
+						}
+
+						return this.getData(this.data.map.colorMapping).then(function (mappings) {
+							angular.forEach(mappings.byId, function (mapping) {
+								if (!mapping || mapping.id === null || mapping.id === undefined)
+									return;
+
+								var id = parseInt(mapping.id, 10);
+								if (!isFinite(id) || id < 0 || dataNode.byId[id])
+									return;
+
+								var baseName = String(id) +' - '+ (mapping.name || 'Province '+ id);
+								var fileName = baseName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') +'.txt';
+								var path = 'history/provinces/'+ fileName;
+								var file = angular.copy(this.defaultFileNode);
+								file.name = fileName;
+								file.path = path;
+								file.baseName = fileName.replace(/\.txt$/i, '');
+								file.extension = 'txt';
+								file.fileType = 'pdxScript';
+								file.isFile = true;
+
+								var province = angular.copy(this.data.pdxScriptData.proto);
+								province.file = file;
+								province.sourceFiles = [path];
+								province.data = {
+									type: 'rootScope',
+									name: 'pdxScript',
+									subNodes: [],
+									depth: 0,
+									comments: [],
+									data: {
+										base_tax: 0,
+										base_production: 0,
+										base_manpower: 0,
+									},
+								};
+								province._id = id;
+								province._effectiveData = angular.copy(province.data.data);
+								province._isFallback = true;
+								province._definition = mapping;
+								province._addCores = [];
+								dataNode.byId[id] = province;
+								dataNode.provinceIds.push(id);
+							}.bind(this));
+
+							dataNode.provinceIds.sort(function (a, b) { return a - b; });
+							return dataNode;
+						}.bind(this));
+					}.bind(this));
+				}.bind(this));
 			}.bind(this));
+		},
+		'setProvinceHistoryValue': function (province, key, value) {
+			var targetBlock = null;
+			var targetProperty = null;
+			var targetDate = null;
+			angular.forEach(province.data && province.data.subNodes, function (block) {
+				var date = getProvinceHistoryDate(block.name);
+				if (!date || compareProvinceHistoryDates(date, provinceHistoryReferenceDate) > 0)
+					return;
+				angular.forEach(block.subNodes, function (property) {
+					if (property.name != key)
+						return;
+					if (!targetDate || compareProvinceHistoryDates(date, targetDate) >= 0)
+					{
+						targetBlock = block;
+						targetProperty = property;
+						targetDate = date;
+					}
+				});
+			});
+			if (targetProperty)
+			{
+				targetProperty.value = value;
+				targetProperty.data = value;
+				targetBlock.data[key] = value;
+			}
+			else
+				province.data.data[key] = value;
+
+			if (!province._effectiveData)
+				province._effectiveData = {};
+			province._effectiveData[key] = value;
 		},
 		'linkProvinceHistory': function (dataNode) {
 			// look at all connections
@@ -1212,14 +1486,15 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 					if (country._tag)
 						country._tag._country = country;
 				}
-				if (this.data.history.provinces.lastGenerated && country._tag)
+				if (this.data.history.provinces.byId.length && country._tag)
 				{
 					angular.forEach(country._ownedProvinces, function (province) {
 						province._country = null;
 					});
 					country._ownedProvinces = [];
 					angular.forEach(this.data.history.provinces.byId, function (province) {
-						if (province.data.data.owner == country._tag.name)
+						var provinceData = province._effectiveData || province.data.data;
+						if (provinceData.owner == country._tag.name)
 						{
 							country._ownedProvinces.push(province);
 							province._country = country;
@@ -1255,21 +1530,164 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			}.bind(this));
 		},
 		'generateMapEnvironment':  function (dataNode) {
+			return traceMapAnalysisPromise('loadMapEnvironment', function () {
+				return $q.when(dataNode);
+			}.bind(this));
+		},
+		'generateCommonColorDefinitions': function (dataNode) {
+			var sourcePath = dataNode.definitionPath;
+			dataNode.colorByName = {};
+			dataNode.sourceDataNodes = [];
+
+			var readColor = function (value) {
+				if (!angular.isArray(value) || value.length < 3)
+					return null;
+				var channels = value.slice(0, 3).map(function (channel) {
+					return Number(channel);
+				});
+				if (channels.some(function (channel) {
+					return !isFinite(channel) || channel < 0 || channel > 255;
+				}))
+					return null;
+
+				var normalized = channels.every(function (channel) {
+					return channel <= 1;
+				}) && value.slice(0, 3).some(function (channel) {
+					return /[.eE]/.test(String(channel));
+				});
+				return channels.map(function (channel) {
+					return Math.round(normalized ? channel * 255 : channel);
+				}).concat([255]);
+			};
+			var collectDefinitions = function (node) {
+				var colorNode = null;
+				angular.forEach(node.subNodes || [], function (child) {
+					if (child.name == 'color')
+						colorNode = child;
+				});
+				if (colorNode)
+				{
+					var color = readColor(colorNode.value);
+					if (color)
+						dataNode.colorByName[String(node.name).toLowerCase()] = color;
+				}
+				angular.forEach(node.subNodes || [], function (child) {
+					if (child.name != 'color')
+						collectDefinitions(child);
+				});
+			};
+			var collectFiles = function (directory) {
+				return this.loadFileNodeDirectory(directory).then(function (loadedDirectory) {
+					var files = loadedDirectory.files.filter(function (file) {
+						return /\.txt$/i.test(file.name);
+					});
+					var folderPromises = [];
+					angular.forEach(loadedDirectory.folders, function (folder) {
+						folderPromises.push(this.getFileNodeByPath(folder.path).then(function (childDirectory) {
+							return collectFiles(childDirectory);
+						}));
+					}.bind(this));
+					return $q.all(folderPromises).then(function (childFiles) {
+						angular.forEach(childFiles, function (nestedFiles) {
+							files = files.concat(nestedFiles);
+						});
+						return files;
+					});
+				}.bind(this));
+			}.bind(this);
+
+			return this.getFileEntry(sourcePath, null, true, true).then(function (entry) {
+				if (!entry)
+				{
+					console.info('[map-analysis] Missing optional file: '+ sourcePath);
+					dataNode.sourceFiles = [];
+					return dataNode;
+				}
+				dataNode.sourceFiles = [sourcePath];
+				return this.getFileNodeByPath(sourcePath).then(function (directory) {
+					return collectFiles(directory);
+				}).then(function (files) {
+					files.sort(function (a, b) { return a.path.localeCompare(b.path); });
+					var filePromises = [];
+					angular.forEach(files, function (file) {
+						filePromises.push(this.getPdxScriptDataByPath(file.path));
+					}.bind(this));
+					return $q.all(filePromises).then(function (scriptNodes) {
+						dataNode.sourceDataNodes = scriptNodes;
+						angular.forEach(scriptNodes, function (scriptNode) {
+							collectDefinitions(scriptNode.data);
+						});
+						return dataNode;
+					});
+				}.bind(this));
+			}.bind(this));
+		},
+		'loadMapEnvironment': function (fileNames) {
+			var dataNode = this.data.map.environment;
+			dataNode.sourceFiles = [];
+			var pathsByName = {
+				default: 'map/default.map',
+				climate: 'map/climate.txt',
+				continent: 'map/continent.txt',
+				region: 'map/region.txt',
+				area: 'map/area.txt',
+				seasons: 'map/seasons.txt',
+				terrain: 'map/terrain.txt',
+			};
 			var promises = [];
-			for (var i = 0; i < dataNode.sourceFiles.length; i++)
-			{
-				promises.push(this.getPdxScriptDataByPath(dataNode.sourceFiles[i]).then(function (pdxNode) {
-					dataNode[pdxNode.file.baseName] = pdxNode.data;
-					dataNode.nodesByName[pdxNode.file.baseName] = pdxNode;
-					dataNode.byPath[pdxNode.file.path] = pdxNode;
-				}));
-			}
-			return $q.all(promises).then(function () {
-				return dataNode;
+
+			return this.getData(dataNode).then(function () {
+				angular.forEach(fileNames, function (fileName) {
+					var path = pathsByName[fileName];
+					if (!path)
+						return;
+
+					promises.push(this.getFileEntry(path, null, true).then(function (entry) {
+						if (!entry)
+						{
+							console.info('[map-analysis] Missing optional file: '+ path);
+							delete dataNode[fileName];
+							delete dataNode.nodesByName[fileName];
+							delete dataNode.byPath[path];
+							return;
+						}
+
+						return this.getPdxScriptDataByPath(path).then(function (pdxNode) {
+							dataNode[fileName] = pdxNode.data;
+							dataNode.nodesByName[fileName] = pdxNode;
+							dataNode.byPath[path] = pdxNode;
+						}, function (error) {
+							if (error && error.name == 'NotFoundError')
+							{
+								console.info('[map-analysis] Missing optional file: '+ path);
+								delete dataNode[fileName];
+								delete dataNode.nodesByName[fileName];
+								delete dataNode.byPath[path];
+								return;
+							}
+							return $q.reject(error);
+						});
+					}.bind(this)));
+				}.bind(this));
+
+				return $q.all(promises).then(function () {
+					if (!dataNode.default)
+						dataNode.default = {data: {}};
+					this.linkMapEnvironment(dataNode);
+					return dataNode;
+				}.bind(this));
 			}.bind(this));
 		},
 		'saveMapEnvironment':  function (dataNode) {
 			var promises = [];
+			var savedNodes = [];
+			var saveNode = function (node) {
+				if (node && savedNodes.indexOf(node) == -1)
+				{
+					savedNodes.push(node);
+					promises.push(this.saveData(node));
+				}
+			}.bind(this);
 
 			angular.forEach(dataNode, function (value, key) {
 				if (key[0] == '_')
@@ -1285,12 +1703,12 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 						for (var i = 0; i < ids.length; i++)
 							value.push(ids[i]);
 
-						promises.push(this.saveData(value._node));
+						saveNode(value._node);
 					}
 					else if (value._type == 'namedSet' || value._type == 'multipleNamed')
 					{
 						angular.forEach(value._nodeByName, function (node) {
-							if ('_provinces' in node)
+							if ('_provinces' in node && angular.isArray(node.value))
 							{
 								var ids = [];
 								for (var i = 0; i < node._provinces.length; i++)
@@ -1303,20 +1721,268 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 							}
 						});
 
-						promises.push(this.saveData(value._node));
+						saveNode(value._node);
 					}
 				}
 			}.bind(this));
 
+			if (dataNode.regionsModified)
+			{
+				saveNode(dataNode.nodesByName.region);
+				saveNode(dataNode.nodesByName.area);
+			}
+
 			return $q.all(promises).then(function () {
+				if (dataNode.regionsModified)
+					dataNode.regionsModified = false;
 				return dataNode;
 			}.bind(this));
 		},
+		'setProvinceClassification': function (province, key, value) {
+			var settings = {
+				_climate: {defaultValue: 'temperate', allowed: ['temperate', 'arid', 'tropical', 'arctic']},
+				_winter: {defaultValue: 'no_winter', allowed: ['no_winter', 'mild_winter', 'normal_winter', 'severe_winter']},
+				_monsoon: {defaultValue: 'no_monsoon', allowed: ['no_monsoon', 'mild_monsoon', 'normal_monsoon', 'severe_monsoon']},
+			};
+			var setting = settings[key];
+			var environment = this.data.map.environment;
+			var classificationSet = environment[key];
+			if (!setting || !classificationSet || classificationSet._type != 'namedSet')
+				return false;
+			if (setting.allowed.indexOf(value) == -1)
+				throw new Error('Unsupported '+ key +' classification: '+ value);
+
+			var current = province[key];
+			if (current && current._value == value)
+				return false;
+
+			var currentNode = current && current._type == 'namedSet' ? current : null;
+			if (currentNode)
+			{
+				var currentIndex = currentNode._provinces.indexOf(province);
+				if (currentIndex != -1)
+					currentNode._provinces.splice(currentIndex, 1);
+			}
+
+			var rootSet = environment._climate;
+			var node = classificationSet._nodeByName[value];
+			if (!node && value != setting.defaultValue)
+			{
+				var values = [];
+				var root = environment.climate;
+				root.data[value] = values;
+				node = {
+					type: 'property',
+					name: value,
+					subNodes: [],
+					depth: root.depth + 1,
+					value: values,
+					data: values,
+					comments: [],
+					icon: 'list',
+				};
+				root.subNodes.push(node);
+				node._provinces = [];
+				node._node = environment.nodesByName.climate;
+				node._type = 'namedSet';
+				node._value = value;
+				node._displayName = value.replace(/_/g, ' ');
+				rootSet._nodeByName[value] = node;
+				if (key == '_winter')
+					environment._winter._nodeByName[value] = node;
+				else if (key == '_monsoon')
+					environment._monsoon._nodeByName[value] = node;
+			}
+
+			if (node)
+			{
+				if (node._provinces.indexOf(province) == -1)
+					node._provinces.push(province);
+				province[key] = node;
+			}
+			else
+			{
+				var defaultNames = {
+					temperate: 'temperate',
+					no_winter: 'no winter',
+					no_monsoon: 'no monsoon',
+				};
+				province[key] = {
+					name: defaultNames[value],
+					_value: value,
+					_type: 'classification',
+				};
+			}
+			return true;
+		},
+		'updateProvinceRegions': function (province, regionNames) {
+			var environment = this.data.map.environment;
+			var regionRoot = environment.region;
+			var areaRoot = environment.area;
+			if (!regionRoot || !areaRoot)
+				throw new Error('Cannot edit province regions without map/region.txt and map/area.txt.');
+			if (!angular.isArray(regionNames))
+				throw new Error('Province region assignments must be a list.');
+
+			var regionsByName = {};
+			angular.forEach(regionRoot.subNodes, function (region) {
+				regionsByName[region.name] = region;
+			});
+			var desiredRegions = [];
+			var desiredNames = [];
+			angular.forEach(regionNames, function (name) {
+				if (!regionsByName[name])
+					throw new Error('Unknown map region: '+ name);
+				if (desiredNames.indexOf(name) == -1)
+				{
+					desiredNames.push(name);
+					desiredRegions.push(regionsByName[name]);
+				}
+			});
+
+			var currentNames = [];
+			angular.forEach(province._regions || [], function (region) {
+				currentNames.push(region.name);
+			});
+			currentNames.sort();
+			desiredNames.sort();
+			if (currentNames.join(',') == desiredNames.join(','))
+				return false;
+
+			var provinceId = String(province._id);
+			var provinceAreas = [];
+			angular.forEach(areaRoot.subNodes, function (area) {
+				var ids = angular.isArray(area.value) ? area.value : [area.value];
+				if (ids.indexOf(provinceId) != -1)
+					provinceAreas.push(area);
+			});
+			if (provinceAreas.length > 1)
+				throw new Error('Province '+ provinceId +' appears in multiple map areas; refusing to alter ambiguous region data.');
+
+			var provinceArea = provinceAreas[0];
+			if (provinceArea)
+			{
+				var ids = angular.isArray(provinceArea.value) ? provinceArea.value : [provinceArea.value];
+				if (ids.length > 1)
+				{
+					var provinceIndex = ids.indexOf(provinceId);
+					ids.splice(provinceIndex, 1);
+					provinceArea.value = provinceArea.data = ids;
+					provinceArea = null;
+				}
+			}
+
+			if (!provinceArea)
+			{
+				var areaNameBase = 'jorodox_'+ provinceId +'_area';
+				var areaName = areaNameBase;
+				var suffix = 2;
+				while (areaRoot.data[areaName])
+					areaName = areaNameBase +'_'+ suffix++;
+
+				var newIds = [provinceId];
+				provinceArea = {
+					type: 'property',
+					name: areaName,
+					subNodes: [],
+					depth: areaRoot.depth + 1,
+					value: newIds,
+					data: newIds,
+					comments: [],
+					icon: 'list',
+				};
+				areaRoot.subNodes.push(provinceArea);
+				areaRoot.data[areaName] = newIds;
+			}
+
+			var areaNameForProvince = provinceArea.name;
+			angular.forEach(regionRoot.subNodes, function (region) {
+				var areaNames = region.data.areas;
+				if (!angular.isArray(areaNames))
+					areaNames = areaNames ? [areaNames] : [];
+				var existingIndex = areaNames.indexOf(areaNameForProvince);
+				var shouldContain = desiredNames.indexOf(region.name) != -1;
+				if (shouldContain && existingIndex == -1)
+					areaNames.push(areaNameForProvince);
+				else if (!shouldContain && existingIndex != -1)
+					areaNames.splice(existingIndex, 1);
+
+				if (shouldContain || existingIndex != -1)
+				{
+					region.data.areas = areaNames;
+					var areasNode = null;
+					angular.forEach(region.subNodes, function (child) {
+						if (child.name == 'areas')
+							areasNode = child;
+					});
+					if (!areasNode)
+					{
+						areasNode = {
+							type: 'property',
+							name: 'areas',
+							subNodes: [],
+							depth: region.depth + 1,
+							comments: [],
+							icon: 'list',
+						};
+						region.subNodes.push(areasNode);
+					}
+					areasNode.value = areasNode.data = areaNames;
+				}
+			});
+
+			angular.forEach(regionRoot.subNodes, function (region) {
+				var regionProvinces = region._provinces || [];
+				var index = regionProvinces.indexOf(province);
+				if (index != -1)
+					regionProvinces.splice(index, 1);
+			});
+			province._regions.length = 0;
+			province._regions._type = 'multipleNamed';
+			angular.forEach(desiredRegions, function (region) {
+				province._regions.push(region);
+				if (region._provinces.indexOf(province) == -1)
+					region._provinces.push(province);
+			});
+			environment.regionsModified = true;
+			return true;
+		},
 		'linkMapEnvironment': function (dataNode) {
 			this.data.history.provinces._environment = dataNode;
+			delete dataNode._isSeaStart;
+			delete dataNode._isLake;
+			delete dataNode._isForcedCoastal;
+			delete dataNode._climate;
+			delete dataNode._winter;
+			delete dataNode._monsoon;
+			delete dataNode._continent;
+			delete dataNode._regions;
+
+			if (this.data.history.provinces.byId.length)
+			{
+				var defaultClassification = function (name) {
+					var values = {
+						temperate: 'temperate',
+						'no winter': 'no_winter',
+						'no monsoon': 'no_monsoon',
+					};
+					return {name: name, _value: values[name], _type: 'classification'};
+				};
+				angular.forEach(this.data.history.provinces.byId, function (province) {
+					province._isSeaStart = null;
+					province._isLake = null;
+					province._isForcedCoastal = null;
+					province._climate = defaultClassification('temperate');
+					province._winter = defaultClassification('no winter');
+					province._monsoon = defaultClassification('no monsoon');
+					province._continent = null;
+					province._regions = [];
+					province._regions._type = 'multipleNamed';
+				});
+			}
 
 			// Connect things
-			if (this.data.history.provinces.lastGenerated && dataNode.default.data.sea_starts)
+			if (this.data.history.provinces.byId.length && dataNode.default && dataNode.default.data.sea_starts)
 			{
 				dataNode.default.data.sea_starts._provinces = [];
 				dataNode.default.data.sea_starts._node = dataNode.nodesByName.default;
@@ -1334,7 +2000,7 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 					}
 				}.bind(this));
 			}
-			if (this.data.history.provinces.lastGenerated && dataNode.default.data.lakes)
+			if (this.data.history.provinces.byId.length && dataNode.default && dataNode.default.data.lakes)
 			{
 				dataNode.default.data.lakes._provinces = [];
 				dataNode.default.data.lakes._node = dataNode.nodesByName.default;
@@ -1352,7 +2018,7 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 					}
 				}.bind(this));
 			}
-			if (this.data.history.provinces.lastGenerated && dataNode.default.data.force_coastal)
+			if (this.data.history.provinces.byId.length && dataNode.default && dataNode.default.data.force_coastal)
 			{
 				dataNode.default.data.force_coastal._provinces = [];
 				dataNode.default.data.force_coastal._node = dataNode.nodesByName.default;
@@ -1370,32 +2036,64 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 					}
 				}.bind(this));
 			}
-			if (this.data.history.provinces.lastGenerated && dataNode.climate)
+			if (this.data.history.provinces.byId.length && dataNode.climate)
 			{
 				dataNode._climate = dataNode.climate;
 				dataNode.climate._type = 'namedSet';
 				dataNode.climate._node = dataNode.nodesByName.climate;
 				dataNode._climate._nodeByName = {};
+				dataNode._winter = {_type: 'namedSet', _node: dataNode.nodesByName.climate, _nodeByName: {}};
+				dataNode._monsoon = {_type: 'namedSet', _node: dataNode.nodesByName.climate, _nodeByName: {}};
+				var classificationKeys = {
+					tropical: '_climate',
+					arid: '_climate',
+					arctic: '_climate',
+					mild_winter: '_winter',
+					normal_winter: '_winter',
+					severe_winter: '_winter',
+					mild_monsoon: '_monsoon',
+					normal_monsoon: '_monsoon',
+					severe_monsoon: '_monsoon',
+				};
 
 				angular.forEach(dataNode.climate.subNodes, function (climate) {
 					climate._provinces = [];
 					climate._node = dataNode.climate._node;
 					dataNode._climate._nodeByName[climate.name] = climate;
 					climate._type = 'namedSet';
+					climate._displayName = climate.name.replace(/_/g, ' ');
+					climate._value = climate.name;
+					if (!angular.isArray(climate.value) && climate.value !== null && !angular.isObject(climate.value))
+					{
+						climate.value = [climate.value];
+						climate.data = climate.value;
+						dataNode.climate.data[climate.name] = climate.value;
+					}
+					if (classificationKeys[climate.name] == '_winter')
+						dataNode._winter._nodeByName[climate.name] = climate;
+					else if (classificationKeys[climate.name] == '_monsoon')
+						dataNode._monsoon._nodeByName[climate.name] = climate;
 
-					angular.forEach(climate.value, function (provinceId) {
+					angular.forEach(angular.isArray(climate.value) ? climate.value : [], function (provinceId) {
 						if (this.data.history.provinces.byId[provinceId])
 						{
 							var province = this.data.history.provinces.byId[provinceId];
-
-							province._climate = climate;
+							var classificationKey = classificationKeys[climate.name];
+							if (classificationKey)
+								province[classificationKey] = climate;
 							if (climate._provinces.indexOf(province) == -1)
 								climate._provinces.push(province);
 						}
 					}.bind(this));
 				}.bind(this));
 			}
-			if (this.data.history.provinces.lastGenerated && dataNode.continent)
+			else
+			{
+				dataNode._climate = {_type: 'classification'};
+				dataNode._winter = {_type: 'classification'};
+				dataNode._monsoon = {_type: 'classification'};
+			}
+			if (this.data.history.provinces.byId.length && dataNode.continent)
 			{
 				dataNode._continent = dataNode.continent;
 				dataNode.continent._type = 'namedSet';
@@ -1420,12 +2118,9 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 					}.bind(this));
 				}.bind(this));
 			}
-			if (this.data.history.provinces.lastGenerated && dataNode.region)
+			if (this.data.history.provinces.byId.length)
 			{
-				dataNode._regions = dataNode.region;
-				dataNode.region._type = 'multipleNamed';
-				dataNode.region._node = dataNode.nodesByName.region;
-				dataNode._regions._nodeByName = {};
+				dataNode._regions = {_type: 'classification'};
 
 				angular.forEach(this.data.history.provinces.byId, function (province) {
 					if (!province._regions)
@@ -1438,43 +2133,70 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 						province._regions.length = 0;
 					}
 				});
+			}
 
+			if (this.data.history.provinces.byId.length && dataNode.region && dataNode.area)
+			{
+				dataNode._regions._nodeByName = {};
+				var areasByName = {};
+				angular.forEach(dataNode.area.subNodes, function (area) {
+					areasByName[area.name] = area;
+				});
 				angular.forEach(dataNode.region.subNodes, function (region) {
 					region._provinces = [];
-					region._node = dataNode.region._node;
+					region._node = dataNode.nodesByName.region;
 					dataNode._regions._nodeByName[region.name] = region;
 
-					angular.forEach(region.value, function (provinceId) {
-						if (this.data.history.provinces.byId[provinceId])
-						{
+					var areaNames = region.data && region.data.areas;
+					if (!angular.isArray(areaNames))
+					{
+						var areasNode = null;
+						angular.forEach(region.subNodes, function (child) {
+							if (child.name == 'areas')
+								areasNode = child;
+						});
+						areaNames = areasNode && areasNode.value;
+					}
+					if (!angular.isArray(areaNames))
+						areaNames = areaNames ? [areaNames] : [];
+
+					angular.forEach(areaNames, function (areaName) {
+						var area = areasByName[areaName];
+						if (!area)
+							return;
+						var provinceIds = angular.isArray(area.value) ? area.value : [area.value];
+						angular.forEach(provinceIds, function (provinceId) {
 							var province = this.data.history.provinces.byId[provinceId];
+							if (!province)
+								return;
 
-							if (province._regions.indexOf(province) == -1)
+							if (province._regions.indexOf(region) == -1)
 								province._regions.push(region);
-
 							if (region._provinces.indexOf(province) == -1)
 								region._provinces.push(province);
-						}
+						}.bind(this));
 					}.bind(this));
 				}.bind(this));
 			}
 		},
 		'getPdxScriptDataByPath': function (path) {
-			// Make data-wrapper
-			if (!this.data.pdxScriptData.byPath[path])
-			{
-				this.data.pdxScriptData.byPath[path] = angular.copy(this.data.pdxScriptData.proto);
-				this.data.pdxScriptData.byPath[path].sourceFiles = [path];
-				return this.generateData(this.data.pdxScriptData.byPath[path]);
-			}
-			else if (this.isNodeOutdatedQuick(this.data.pdxScriptData.byPath[path]))
-			{
-				return this.generateData(this.data.pdxScriptData.byPath[path]);
-			}
-			else
-			{
-				return $q.when(this.data.pdxScriptData.byPath[path]);
-			}
+			return traceMapAnalysisPromise('getPdxScriptData ('+ path +')', function () {
+				// Make data-wrapper
+				if (!this.data.pdxScriptData.byPath[path])
+				{
+					this.data.pdxScriptData.byPath[path] = angular.copy(this.data.pdxScriptData.proto);
+					this.data.pdxScriptData.byPath[path].sourceFiles = [path];
+					return this.generateData(this.data.pdxScriptData.byPath[path]);
+				}
+				else if (this.isNodeOutdatedQuick(this.data.pdxScriptData.byPath[path]))
+				{
+					return this.generateData(this.data.pdxScriptData.byPath[path]);
+				}
+				else
+				{
+					return $q.when(this.data.pdxScriptData.byPath[path]);
+				}
+			}.bind(this));
 		},
 		'getYamlDataByPath': function (path) {
 			// Make data-wrapper
@@ -1498,18 +2220,20 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 		},
 		'generatePdxScriptData': function (dataNode) {
 			dataNode.data = null;
-			return this.getFileText(dataNode.sourceFiles[0]).then(function (text) {
-				dataNode.data = pdxScriptService.readFile(text);
+			return traceMapAnalysisPromise('parsePdxScript ('+ dataNode.sourceFiles[0] +')', function () {
+				return this.getFileText(dataNode.sourceFiles[0]).then(function (text) {
+					dataNode.data = pdxScriptService.readFile(text);
 
-				/*$rootScope.$watch(function () {
-					return dataNode.data;
-				}, function (newValue, oldValue) {
-					dataNode.localModified = new Date();
-				});*/
+					/*$rootScope.$watch(function () {
+						return dataNode.data;
+					}, function (newValue, oldValue) {
+						dataNode.localModified = new Date();
+					});*/
 
-				return this.getFileNodeByPath(dataNode.sourceFiles[0]).then(function (node) {
-					dataNode.file = node;
-					return dataNode;
+					return this.getFileNodeByPath(dataNode.sourceFiles[0]).then(function (node) {
+						dataNode.file = node;
+						return dataNode;
+					}.bind(this));
 				}.bind(this));
 			}.bind(this));
 		},
@@ -1520,23 +2244,115 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 				return this.getMetadata(dataNode.file);
 			}.bind(this));
 		},
+		'parseLocalisationText': function (text) {
+			var data = {};
+			var language = null;
+			var lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+			angular.forEach(lines, function (line) {
+				var trimmed = line.trim();
+				if (!trimmed || trimmed[0] == '#')
+					return;
+
+				var languageMatch = trimmed.match(/^([A-Za-z0-9_]+):\s*$/);
+				if (languageMatch)
+				{
+					language = languageMatch[1];
+					if (!data[language])
+						data[language] = {};
+					return;
+				}
+
+				var entryMatch = trimmed.match(/^([^:\s]+):(\d+)\s+"(.*)"\s*(?:#.*)?$/);
+				if (!language || !entryMatch)
+					return;
+
+				var value = entryMatch[3].replace(/\\(.)/g, function (match, character) {
+					if (character == 'n') return '\n';
+					if (character == 'r') return '\r';
+					if (character == 't') return '\t';
+					if (character == '"' || character == '\\') return character;
+					return match;
+				});
+				data[language][entryMatch[1] +':'+ entryMatch[2]] = value;
+			});
+			return data;
+		},
+		'serializeLocalisationText': function (data, originalText) {
+			var lines = originalText.split(/\r?\n/);
+			var output = [];
+			var seen = {};
+			var language = null;
+			var escapeValue = function (value) {
+				if (angular.isObject(value) && '_text' in value)
+					value = value._text;
+				return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+					.replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
+			};
+			var appendMissingEntries = function (currentLanguage) {
+				var entries = data[currentLanguage];
+				if (!entries)
+					return;
+				if (!seen[currentLanguage])
+					seen[currentLanguage] = {};
+
+				angular.forEach(entries, function (value, key) {
+					if (seen[currentLanguage][key])
+						return;
+					var keyMatch = key.match(/^(.+?)(?::(\d+))?$/);
+					if (!keyMatch)
+						return;
+					output.push('\t'+ keyMatch[1] +':'+ (keyMatch[2] || '0') +' "'+ escapeValue(value) +'"');
+				});
+			};
+
+			angular.forEach(lines, function (line) {
+				var normalizedLine = line.replace(/^\uFEFF/, '').trim();
+				var languageMatch = normalizedLine.match(/^([A-Za-z0-9_]+):\s*$/);
+				if (languageMatch)
+				{
+					if (language)
+						appendMissingEntries(language);
+					language = languageMatch[1];
+					if (!seen[language])
+						seen[language] = {};
+					output.push(line);
+					return;
+				}
+
+				var entryMatch = line.match(/^(\s*)([^:\s]+):(\d+)\s+"(.*)"\s*(#.*)?$/);
+				if (language && entryMatch)
+				{
+					var key = entryMatch[2] +':'+ entryMatch[3];
+					var value = data[language] && data[language][key];
+					if (value !== undefined)
+						line = entryMatch[1] + key +' "'+ escapeValue(value) +'"'+ (entryMatch[5] || '');
+					seen[language][key] = true;
+				}
+				output.push(line);
+			});
+			if (language)
+				appendMissingEntries(language);
+			return output.join('\n');
+		},
 		'generateYamlData': function (dataNode) {
 			dataNode.data = null;
 			return this.getFileText(dataNode.sourceFiles[0]).then(function (text) {
-
-				// Prefix BOM if not present (EU4 has some 'broken' files)
-				if (text[0] != '\xEF')
+				if (dataNode.sourceFiles[0].indexOf('localisation/') == 0)
 				{
-					//text = '\xEF\xBB\xBF' + text;
+					dataNode.localisationSourceText = text;
+					dataNode.data = this.parseLocalisationText(text);
 				}
-
-				try
+				else
 				{
-					dataNode.data = jsyaml.safeLoad(text);
-				}
-				catch (e)
-				{
-					console.log(e);
+					text = text.replace(/^\uFEFF/, '');
+					try
+					{
+						dataNode.data = jsyaml.safeLoad(text);
+					}
+					catch (e)
+					{
+						console.log(e);
+					}
 				}
 
 				/*$rootScope.$watch(function () {
@@ -1584,24 +2400,32 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			return value;
 		},
 		'saveYamlData': function (dataNode) {
-			var yamlText = jsyaml.dump(this.convertToPlainData(dataNode.data));
+			var yamlText = dataNode.localisationSourceText !== undefined
+				? this.serializeLocalisationText(dataNode.data, dataNode.localisationSourceText)
+				: jsyaml.dump(this.convertToPlainData(dataNode.data));
 
 			return this.writeFileText(dataNode.file.path, yamlText, 'utf-8', true).then(function () {
+				if (dataNode.localisationSourceText !== undefined)
+					dataNode.localisationSourceText = yamlText;
 				return this.getMetadata(dataNode.file);
 			}.bind(this));;
 		},
 		'generateMapImage': function (dataNode) {
-			return this.getFile(dataNode.sourceFiles[0]).then(function (file) {
-				dataNode.imageBlob = file;
-				return dataNode;
-			});
+			return traceMapAnalysisPromise('generateMapImage ('+ dataNode.sourceFiles[0] +')', function () {
+				return this.getFile(dataNode.sourceFiles[0]).then(function (file) {
+					dataNode.imageBlob = file;
+					return dataNode;
+				});
+			}.bind(this));
 		},
 		'generateMapInfo': function (dataNode) {
-			return this.getData(this.data.map[dataNode.mapSource].image).then(function (imageNode) {
-				return this.getImage(imageNode);
-			}.bind(this)).then(function (image) {
-				dataNode.analytics = mapAnalyzeService.analyzeColorMap(image);
-				return dataNode;
+			return traceMapAnalysisPromise('analyzeColorMap ('+ dataNode.mapSource +')', function () {
+				return this.getData(this.data.map[dataNode.mapSource].image).then(function (imageNode) {
+					return this.getImage(imageNode);
+				}.bind(this)).then(function (image) {
+					dataNode.analytics = mapAnalyzeService.analyzeColorMap(image);
+					return dataNode;
+				}.bind(this));
 			}.bind(this));
 		},
 		'linkMapInfo': function (dataNode) {
@@ -1626,53 +2450,86 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			}
 		},
 		'generateMapGrid': function (dataNode) {
-			return $q.all({
-				info: this.getData(this.data.map[dataNode.mapSource].info),
-				image: this.getData(this.data.map[dataNode.mapSource].image).then(function (dataNode) { return this.getImage(dataNode); }.bind(this))
-			}).then(function (data) {
-				var img = mapAnalyzeService.borderImage(data.image, data.info.analytics.colors, false);
-				// Hack! imageBlob not actually set
-				//dataNode.imageBlob = new Blob([img.src], {type: 'image/png'});
-				this.imageCache[dataNode.imageCacheName] = img;
-				return dataNode;
+			return traceMapAnalysisPromise('generateMapGrid ('+ dataNode.mapSource +')', function () {
+				return $q.all({
+					info: this.getData(this.data.map[dataNode.mapSource].info),
+					image: this.getData(this.data.map[dataNode.mapSource].image).then(function (dataNode) { return this.getImage(dataNode); }.bind(this))
+				}).then(function (data) {
+					var img = mapAnalyzeService.borderImage(data.image, data.info.analytics.colors, false);
+					// Hack! imageBlob not actually set
+					//dataNode.imageBlob = new Blob([img.src], {type: 'image/png'});
+					this.imageCache[dataNode.imageCacheName] = img;
+					return dataNode;
+				}.bind(this));
 			}.bind(this));
 		},
 		'generateMapColorMapping': function (dataNode) {
-			return this.getFileText('map/definition.csv').then(function (text) {
-				dataNode.byId = [];
-				dataNode.byColor = [];
+			return traceMapAnalysisPromise('parseColorMapping (map/definition.csv)', function () {
+				return this.getFileText('map/definition.csv').then(function (text) {
+					dataNode.byId = [];
+					dataNode.byColor = [];
 
-				for (line of text.split("\n"))
-				{
-					var fields = line.split(';');
+					var csv = Papa.parse(text, {delimiter: ';', skipEmptyLines: true});
+					if (csv.errors.length)
+						console.warn('[map-analysis] Errors parsing map/definition.csv:', csv.errors);
 
-					if (fields[0] == 'province')
-						continue;
+					angular.forEach(csv.data, function (fields) {
+						var idText = String(fields[0] || '').replace(/^\uFEFF/, '').trim();
+						if (!idText || idText.toLowerCase() == 'province')
+							return;
 
-					var mapping = {
-						id: fields[0],
-						r: fields[1],
-						g: fields[2],
-						b: fields[3],
-						colorNum: parseInt(fields[1]) << 16 | parseInt(fields[2]) << 8 | parseInt(fields[3]),
-						name: fields[4] + '',
-						center: null,
-					};
-					if (fields[5] && fields[5].indexOf(',') > -1)
-					{
-						mapping.center = [
-							parseFloat(fields[5].split(',')[0]),
-							parseFloat(fields[5].split(',')[1])
-						];
-					}
+						var redText = String(fields[1] || '').trim();
+						var greenText = String(fields[2] || '').trim();
+						var blueText = String(fields[3] || '').trim();
+						if (!/^\d+$/.test(idText) || !/^\d+$/.test(redText)
+							|| !/^\d+$/.test(greenText) || !/^\d+$/.test(blueText))
+						{
+							console.warn('[map-analysis] Ignoring invalid map/definition.csv row:', fields);
+							return;
+						}
 
-					dataNode.byId[mapping.id] = mapping;
+						var id = Number(idText);
+						var red = Number(redText);
+						var green = Number(greenText);
+						var blue = Number(blueText);
+						if (!isFinite(id) || Math.floor(id) != id || id < 0
+							|| !isFinite(red) || Math.floor(red) != red || red < 0 || red > 255
+							|| !isFinite(green) || Math.floor(green) != green || green < 0 || green > 255
+							|| !isFinite(blue) || Math.floor(blue) != blue || blue < 0 || blue > 255)
+						{
+							console.warn('[map-analysis] Ignoring invalid map/definition.csv row:', fields);
+							return;
+						}
 
-					if (!dataNode.byColor[mapping.colorNum])
-						dataNode.byColor[mapping.colorNum] = mapping;
-				}
+						var centerText = String(fields[5] || '').trim();
+						var centerParts = centerText.split(',');
+						var center = null;
+						if (centerParts.length == 2)
+						{
+							var centerX = Number(centerParts[0].trim());
+							var centerY = Number(centerParts[1].trim());
+							if (isFinite(centerX) && isFinite(centerY))
+								center = [centerX, centerY];
+						}
 
-				return dataNode;
+						var mapping = {
+							id: String(id),
+							r: red,
+							g: green,
+							b: blue,
+							colorNum: red << 16 | green << 8 | blue,
+							name: String(fields[4] || '').trim(),
+							center: center,
+							sourceRow: fields.join(';'),
+						};
+
+						dataNode.byId[id] = mapping;
+						if (!dataNode.byColor[mapping.colorNum])
+							dataNode.byColor[mapping.colorNum] = mapping;
+					});
+
+					return dataNode;
+				}.bind(this));
 			}.bind(this));
 		},
 		'linkMapColorMapping': function (dataNode) {
@@ -1690,12 +2547,34 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			return this.getData(this.data.map.colorMapping).then(function (mappings) {
 				return this.getData(this.data.map.provinces.info).then(function (mapInfo) {
 					dataNode.areaByProvinceId = [];
+					var mappingsByColor = {};
 					for (var i = 0; i < mappings.byId.length; i++)
 					{
-						if (mappings.byId[i] && mapInfo.analytics.colors[mappings.byId[i].colorNum])
+						var mapping = mappings.byId[i];
+						if (!mapping)
+							continue;
+
+						if (!mappingsByColor[mapping.colorNum])
+							mappingsByColor[mapping.colorNum] = [];
+						mappingsByColor[mapping.colorNum].push({provinceId: i, mapping: mapping});
+
+						if (mapInfo.analytics.colors[mapping.colorNum])
 						{
-							dataNode.areaByProvinceId[i] = mapInfo.analytics.colors[mappings.byId[i].colorNum];
+							dataNode.areaByProvinceId[i] = mapInfo.analytics.colors[mapping.colorNum];
 						}
+					}
+
+					var fallbackAreasByColor = mapAnalyzeService.findUniqueColorFallbacks(
+						mappingsByColor,
+						mapInfo.analytics.colors
+					);
+					for (var fallbackColorNum in fallbackAreasByColor)
+					{
+						if (!fallbackAreasByColor.hasOwnProperty(fallbackColorNum))
+							continue;
+
+						var candidate = mappingsByColor[fallbackColorNum][0];
+						dataNode.areaByProvinceId[candidate.provinceId] = fallbackAreasByColor[fallbackColorNum];
 					}
 					return dataNode;
 				}.bind(this));
@@ -1761,20 +2640,28 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 										{
 											if (yamlDataNode.data[language].hasOwnProperty(localisationId))
 											{
+												var canonicalLocalisationId = localisationId.replace(/:\d+$/, '');
 												yamlDataNode.data[language][localisationId] = new String(yamlDataNode.data[language][localisationId]);
 
 												yamlDataNode.data[language][localisationId]._text = yamlDataNode.data[language][localisationId].toString();
 												yamlDataNode.data[language][localisationId]._node = yamlDataNode;
 
-												if (!dataNode.byId[localisationId])
-													dataNode.byId[localisationId] = {};
+												if (!dataNode.byId[canonicalLocalisationId])
+													dataNode.byId[canonicalLocalisationId] = {};
 
-												dataNode.byId[localisationId][language] = yamlDataNode.data[language][localisationId];
+												dataNode.byId[canonicalLocalisationId][language] = yamlDataNode.data[language][localisationId];
+												if (canonicalLocalisationId != localisationId)
+												{
+													if (!dataNode.byId[localisationId])
+														dataNode.byId[localisationId] = {};
+													dataNode.byId[localisationId][language] = yamlDataNode.data[language][localisationId];
+												}
 
 												if (!dataNode.byLanguage[language])
 													dataNode.byLanguage[language] = {};
 
-												dataNode.byLanguage[language][localisationId] = yamlDataNode.data[language][localisationId];;
+												dataNode.byLanguage[language][canonicalLocalisationId] = yamlDataNode.data[language][localisationId];
+												dataNode.byLanguage[language][localisationId] = yamlDataNode.data[language][localisationId];
 
 												if (dataNode.languages.indexOf(language) == -1)
 													dataNode.languages.push(language);
@@ -1833,7 +2720,7 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			}.bind(this));
 		},
 		'linkLocalisation': function (dataNode) {
-			if (this.data.history.provinces.lastGenerated)
+			if (this.data.history.provinces.byId.length)
 			{
 				angular.forEach(this.data.history.provinces.byId, function (province, provinceId) {
 					if (dataNode.byId['PROV'+ provinceId])
@@ -1853,6 +2740,8 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			}
 		},
 		'getProvinceByArea': function (area) {
+			if (!area)
+				return $q.when(null);
 			return this.getData(this.data.map.provinceMapping).then(function (mapping) {
 				return this.getData(this.data.history.provinces).then(function (provinces) {
 					var provinceId = mapping.areaByProvinceId.indexOf(area);
@@ -1886,21 +2775,23 @@ module.factory('modService', ['$rootScope', '$timeout', '$modal', '$q', 'mapAnal
 			});
 		},
 		getFileText: function (path, encoding) {
-			return this.getFile(path).then(function (file) {
-				var deferred = $q.defer();
+			return traceMapAnalysisPromise('readText ('+ path +')', function () {
+				return this.getFile(path).then(function (file) {
+					var deferred = $q.defer();
 
-				var reader = new FileReader();
-				reader.onerror = function (e) {console.log(path);console.log(e);deferred.reject(e);};
-				reader.onloadend = function(event) {
-					deferred.resolve(reader.result);
-				};
-				if (encoding == 'utf8')
-					reader.readAsText(file)
-				else
-					reader.readAsText(file, encoding ? encoding : 'cp1252');
+					var reader = new FileReader();
+					reader.onerror = function (e) {console.log(path);console.log(e);deferred.reject(e);};
+					reader.onloadend = function(event) {
+						deferred.resolve(reader.result);
+					};
+					if (encoding == 'utf8')
+						reader.readAsText(file)
+					else
+						reader.readAsText(file, encoding ? encoding : 'cp1252');
 
-				return deferred.promise;
-			});
+					return deferred.promise;
+				});
+			}.bind(this));
 		},
 		writeFileText: function (path, text, encoding, overwrite) {
 

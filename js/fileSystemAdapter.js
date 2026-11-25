@@ -480,7 +480,9 @@ fileSystemAdapterModule.factory('fileSystemAdapter', ['$q', function ($q) {
 			return getModifiedFile(activeProject.id, normalized).then(function (modified) {
 				if (modified)
 					return descriptor(normalized, modified.kind, normalized.split('/').pop(), modified.lastModified, modified.size);
-				return $q.reject(new Error('File or directory was not found: ' + normalized));
+				var error = new Error('File or directory was not found: ' + normalized);
+				error.name = 'NotFoundError';
+				return $q.reject(error);
 			});
 		},
 		listDirectory: listDirectory,

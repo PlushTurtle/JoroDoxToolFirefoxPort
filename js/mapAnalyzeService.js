@@ -3,6 +3,135 @@ var module = angular.module('mapAnalyzeService', []);
 module.factory('mapAnalyzeService', ['$rootScope', function($rootScope) {
 
 	var mapAnalyzeServiceInstance = {
+		'decodeDxt1ToDataUrl': function (buffer) {
+			var view = new DataView(buffer);
+			var width = view.getUint32(16, true);
+			var height = view.getUint32(12, true);
+			var headerSize = view.getUint32(4, true);
+			var fourCC = String.fromCharCode(view.getUint8(84), view.getUint8(85), view.getUint8(86), view.getUint8(87));
+			if (view.getUint32(0, true) != 0x20534444 || headerSize != 124 || fourCC != 'DXT1')
+				throw new Error('Unsupported DDS image; expected a DXT1 texture.');
+			if (!width || !height)
+				throw new Error('The DDS image has invalid dimensions.');
+
+			var blockColumns = Math.ceil(width / 4);
+			var blockRows = Math.ceil(height / 4);
+			var dataOffset = headerSize + 4;
+			var requiredBytes = dataOffset + blockColumns * blockRows * 8;
+			if (buffer.byteLength < requiredBytes)
+				throw new Error('The DXT1 image data is truncated.');
+
+			var canvas = document.createElement('canvas');
+			canvas.width = width;
+			canvas.height = height;
+			var context = canvas.getContext('2d');
+			var imageData = context.createImageData(width, height);
+			var pixels = imageData.data;
+			var hasAlpha = (view.getUint32(80, true) & 1) != 0;
+			var offset = dataOffset;
+
+			var decode565 = function (color) {
+				var r = (color >> 11) & 31;
+				var g = (color >> 5) & 63;
+				var b = color & 31;
+				return [
+					(r << 3) | (r >> 2),
+					(g << 2) | (g >> 4),
+					(b << 3) | (b >> 2)
+				];
+			};
+
+			for (var blockY = 0; blockY < blockRows; blockY++)
+			{
+				for (var blockX = 0; blockX < blockColumns; blockX++)
+				{
+					var color0 = view.getUint16(offset, true);
+					var color1 = view.getUint16(offset + 2, true);
+					var selectorBits = view.getUint32(offset + 4, true);
+					var colors = [decode565(color0), decode565(color1)];
+
+					if (color0 > color1)
+					{
+						colors.push([
+							Math.floor((2 * colors[0][0] + colors[1][0]) / 3),
+							Math.floor((2 * colors[0][1] + colors[1][1]) / 3),
+							Math.floor((2 * colors[0][2] + colors[1][2]) / 3)
+						], [
+							Math.floor((colors[0][0] + 2 * colors[1][0]) / 3),
+							Math.floor((colors[0][1] + 2 * colors[1][1]) / 3),
+							Math.floor((colors[0][2] + 2 * colors[1][2]) / 3)
+						]);
+					}
+					else
+					{
+						colors.push([
+							Math.floor((colors[0][0] + colors[1][0]) / 2),
+							Math.floor((colors[0][1] + colors[1][1]) / 2),
+							Math.floor((colors[0][2] + colors[1][2]) / 2)
+						], [0, 0, 0]);
+					}
+
+					for (var pixelY = 0; pixelY < 4; pixelY++)
+					{
+						for (var pixelX = 0; pixelX < 4; pixelX++)
+						{
+							var x = blockX * 4 + pixelX;
+							var y = blockY * 4 + pixelY;
+							if (x >= width || y >= height)
+								continue;
+
+							var selector = (selectorBits >>> (2 * (pixelY * 4 + pixelX))) & 3;
+							var pixelOffset = (y * width + x) * 4;
+							pixels[pixelOffset] = colors[selector][0];
+							pixels[pixelOffset + 1] = colors[selector][1];
+							pixels[pixelOffset + 2] = colors[selector][2];
+							pixels[pixelOffset + 3] = selector == 3 && color0 <= color1 && hasAlpha ? 0 : 255;
+						}
+					}
+					offset += 8;
+				}
+			}
+
+			context.putImageData(imageData, 0, 0);
+			return canvas.toDataURL('image/png');
+		},
+		'findUniqueColorFallbacks': function (mappingsByColor, runtimeColors) {
+			// Firefox Bugzilla https://bugzilla.mozilla.org/show_bug.cgi?id=2096742:
+			// with some color-management settings, BMP
+			// canvas readback can report (r+1,g,b). This affects exact color
+			// identifiers, not visual rendering. Keep this browser-agnostic fallback
+			// for Firefox canvas-readback compatibility, and use it only when the
+			// exact runtime color is absent.
+			var fallbackAreasByColor = {};
+			var ambiguousColors = {};
+			for (var runtimeColorNum in runtimeColors)
+			{
+				if (!runtimeColors.hasOwnProperty(runtimeColorNum))
+					continue;
+
+				var area = runtimeColors[runtimeColorNum];
+				if (area.r < 1 || mappingsByColor[runtimeColorNum])
+					continue;
+
+				var sourceColorNum = ((area.r - 1) << 16) | (area.g << 8) | area.b;
+				if (Object.prototype.hasOwnProperty.call(runtimeColors, sourceColorNum))
+					continue;
+
+				var candidates = mappingsByColor[sourceColorNum] || [];
+				if (candidates.length != 1 || ambiguousColors[sourceColorNum])
+					continue;
+
+				if (Object.prototype.hasOwnProperty.call(fallbackAreasByColor, sourceColorNum))
+				{
+					delete fallbackAreasByColor[sourceColorNum];
+					ambiguousColors[sourceColorNum] = true;
+					continue;
+				}
+
+				fallbackAreasByColor[sourceColorNum] = area;
+			}
+			return fallbackAreasByColor;
+		},
 		'analyzeColorMap' : function (img) {
 			var canvas = document.createElement('canvas');
 			canvas.width = img.width;

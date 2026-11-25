@@ -13,7 +13,21 @@
 
 	<h3>Changelog</h3>
 
-	<h4>v0.8.1 (2023-07-12)</h4>
+	<h4>v0.8.3 (2026-11-25)</h4>
+	<h5>Changes</h5>
+	<ul>
+		<li>Expanded map analysis with resilient environment and terrain handling, additional map views, and improved province details and labels.</li>
+		<li>Improved file inspector tree readability and scrolling for large and wide files.</li>
+		<li>Enhanced the 3D model viewer with bounded wheel zoom, orbit and roll controls, right-drag panning, and reliable view cleanup.</li>
+	</ul>
+
+	<h4>v0.8.2 (Firefox port release)</h4>
+	<h5>Changes</h5>
+	<ul>
+		<li>Ported JoroDox Tools to Firefox as a Manifest V3 extension.</li>
+	</ul>
+
+	<h4>v0.8.1 (2023-07-12, Chrome extension baseline)</h4>
 	<h5>Changes</h5>
 	<ul>
 		<li>Make the extension icon clickable (now that this tool no longer is a 'Chrome App')</li>
@@ -101,7 +115,8 @@
 				<li>Check `provinces.bmp` for anomolies like stray pixels.</li>
 				<li>Generate `definition.csv` for `provinces.bmp`.</li>
 		 		<li>Compare `provinces.bmp` to current `definition.csv`.</li>
-		 		<li>Create `sea_starts` list for `definition.csv` from `seas.png` (non-standard file with just the sea-provinces of provinces.bmp).</li>
+				<li>Analyze sea provinces using optional `map/seas.png`; if absent, derive them from `sea_starts` in `map/default.map` and `definition.csv`.</li>
+				<li>Use optional `map/terrain/colormap.png` for the terrain overlay, falling back to `colormap_summer.dds` when supported.</li>
 		 	</ul>
 		</li>
 	</ul>

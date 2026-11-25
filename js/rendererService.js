@@ -1926,6 +1926,37 @@ module.factory('rendererService', ['$rootScope', '$q', 'modService', '$filter', 
 
 			return texture;
 		},
+		'zoomViewScene': function (viewScene, factor) {
+			if (!viewScene || viewScene.disposed || !isFinite(factor) || factor <= 0)
+				return;
+
+			var config = viewScene.viewConfig;
+			var minDistance = config.minDistance || 0.1;
+			var maxDistance = config.maxDistance || minDistance * 1000;
+			var distance = isFinite(config.distance) && config.distance > 0 ? config.distance : minDistance;
+			var nextDistance = distance * factor;
+
+			if (!isFinite(nextDistance))
+				nextDistance = factor > 1 ? maxDistance : minDistance;
+
+			config.distance = Math.max(minDistance, Math.min(maxDistance, nextDistance));
+		},
+		'setViewSceneModelDistance': function (viewScene, extent) {
+			if (!viewScene || viewScene.disposed)
+				return;
+
+			var radius = Math.abs(extent);
+			if (!isFinite(radius) || radius < 0.01)
+				radius = 0.01;
+
+			var config = viewScene.viewConfig;
+			viewScene.camera.near = Math.max(0.001, Math.min(0.1, radius * 0.001));
+			config.minDistance = Math.max(viewScene.camera.near * 2, radius * 0.5);
+			config.maxDistance = Math.max(config.minDistance * 10, radius * 100);
+			config.distance = Math.max(config.minDistance, Math.min(config.maxDistance, radius * 4));
+			viewScene.camera.far = Math.max(10000, config.maxDistance * 2);
+			viewScene.camera.updateProjectionMatrix();
+		},
 		'createViewScene': function (container, width, height, viewConfig) {
 			var deferred = $q.defer();
 
@@ -1943,10 +1974,30 @@ module.factory('rendererService', ['$rootScope', '$q', 'modService', '$filter', 
 					showSpotlights: true,
 					rotate: true,
 					rotation: 0,
+					pitch: Math.asin(0.25),
+					roll: 0,
+					minDistance: 0.2,
+					maxDistance: 2000,
 				};
 			}
 
-			camera = new THREE.PerspectiveCamera( 45, width / height, 1, 10000);
+			if (!isFinite(viewConfig.rotation))
+				viewConfig.rotation = 0;
+			if (!isFinite(viewConfig.pitch))
+				viewConfig.pitch = Math.asin(0.25);
+			if (!isFinite(viewConfig.roll))
+				viewConfig.roll = 0;
+			if (!isFinite(viewConfig.distance) || viewConfig.distance <= 0)
+				viewConfig.distance = 20;
+			if (!isFinite(viewConfig.minDistance) || viewConfig.minDistance <= 0)
+				viewConfig.minDistance = 0.2;
+			if (!isFinite(viewConfig.maxDistance) || viewConfig.maxDistance <= viewConfig.minDistance)
+				viewConfig.maxDistance = viewConfig.minDistance * 10000;
+			viewConfig.pitch = Math.max(-Math.PI / 2 + 0.02, Math.min(Math.PI / 2 - 0.02, viewConfig.pitch));
+			viewConfig.roll = ((viewConfig.roll % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+			viewConfig.distance = Math.max(viewConfig.minDistance, Math.min(viewConfig.maxDistance, viewConfig.distance));
+
+			camera = new THREE.PerspectiveCamera( 45, width / height, 0.1, 10000);
 			camera.position.set(0, 6, 0);
 
 			scene = new THREE.Scene();
@@ -1990,31 +2041,183 @@ module.factory('rendererService', ['$rootScope', '$q', 'modService', '$filter', 
 			renderer.render(scene, camera);
 
 			var clock = new THREE.Clock();
-
 			var viewerDestroyed = false;
+			var animationFrameId = null;
+			var canvas = renderer.domElement;
+			var dragging = false;
+			var dragPointerId = null;
+			var lastPointerX = 0;
+			var lastPointerY = 0;
+			var dragMode = null;
+			var target = new THREE.Vector3();
+			var panRight = new THREE.Vector3();
+			var panUp = new THREE.Vector3();
+			var previousCursor = canvas.style.cursor;
+			var previousTouchAction = canvas.style.touchAction;
 
 			var halfWidth = width / 2;
 		    var halfHeight = height / 2;
 
+			function wrapAngle(angle) {
+				var fullRotation = Math.PI * 2;
+				return ((angle % fullRotation) + fullRotation) % fullRotation;
+			}
+
+			function endDrag(event) {
+				if (!dragging || (event && event.pointerId !== dragPointerId))
+					return;
+
+				var pointerId = dragPointerId;
+				dragging = false;
+				dragMode = null;
+				dragPointerId = null;
+				canvas.style.cursor = previousCursor;
+
+				if (canvas.hasPointerCapture && canvas.hasPointerCapture(pointerId))
+					canvas.releasePointerCapture(pointerId);
+			}
+
+			function onPointerDown(event) {
+				if (viewerDestroyed || (event.button !== 0 && event.button !== 2) || event.isPrimary === false)
+					return;
+
+				event.preventDefault();
+				dragging = true;
+				dragMode = event.button === 2 ? 'pan' : 'orbit';
+				dragPointerId = event.pointerId;
+				lastPointerX = event.clientX;
+				lastPointerY = event.clientY;
+				canvas.style.cursor = dragMode === 'pan' ? 'move' : 'grabbing';
+
+				if (canvas.setPointerCapture)
+					canvas.setPointerCapture(event.pointerId);
+			}
+
+			function onPointerMove(event) {
+				if (!dragging || event.pointerId !== dragPointerId)
+					return;
+
+				event.preventDefault();
+				var deltaX = event.clientX - lastPointerX;
+				var deltaY = event.clientY - lastPointerY;
+				var sensitivity = Math.PI * 2 / Math.max(width, height);
+				lastPointerX = event.clientX;
+				lastPointerY = event.clientY;
+
+				if (dragMode === 'pan')
+				{
+					camera.updateMatrixWorld(true);
+					var elements = camera.matrixWorld.elements;
+					panRight.set(elements[0], elements[1], elements[2]);
+					panUp.set(elements[4], elements[5], elements[6]);
+					var distance = Math.max(viewConfig.minDistance, viewConfig.distance);
+					var worldPerPixel = 2 * distance * Math.tan(camera.fov * Math.PI / 360) / height;
+					target.add(panRight.multiplyScalar(-deltaX * worldPerPixel));
+					target.add(panUp.multiplyScalar(deltaY * worldPerPixel));
+				}
+				else if (event.shiftKey)
+				{
+					viewConfig.roll = wrapAngle(viewConfig.roll - deltaX * sensitivity);
+				}
+				else
+				{
+					viewConfig.rotation = wrapAngle(viewConfig.rotation + deltaX * sensitivity);
+					viewConfig.pitch = Math.max(-Math.PI / 2 + 0.02, Math.min(Math.PI / 2 - 0.02, viewConfig.pitch + deltaY * sensitivity));
+				}
+			}
+
+			function onWheel(event) {
+				if (viewerDestroyed)
+					return;
+
+				event.preventDefault();
+				var delta = event.deltaY;
+				if (event.deltaMode === 1)
+					delta *= 16;
+				else if (event.deltaMode === 2)
+					delta *= height;
+
+				rendererService.zoomViewScene(viewScene, Math.exp(delta * 0.001));
+			}
+
+			function onContextMenu(event) {
+				event.preventDefault();
+			}
+
+			function dispose() {
+				if (viewerDestroyed)
+					return;
+
+				viewerDestroyed = true;
+				if (animationFrameId !== null)
+					window.cancelAnimationFrame(animationFrameId);
+
+				canvas.removeEventListener('wheel', onWheel, false);
+				canvas.removeEventListener('pointerdown', onPointerDown, false);
+				canvas.removeEventListener('pointermove', onPointerMove, false);
+				canvas.removeEventListener('pointerup', endDrag, false);
+				canvas.removeEventListener('pointercancel', endDrag, false);
+				canvas.removeEventListener('lostpointercapture', endDrag, false);
+				canvas.removeEventListener('contextmenu', onContextMenu, false);
+
+				if (dragging && canvas.hasPointerCapture && canvas.hasPointerCapture(dragPointerId))
+					canvas.releasePointerCapture(dragPointerId);
+				dragging = false;
+				canvas.style.cursor = previousCursor;
+				canvas.style.touchAction = previousTouchAction;
+
+				var animations = viewConfig.viewObject && viewConfig.viewObject.animations || [];
+				for (var i = 0; i < animations.length; i++)
+					if (animations[i] && animations[i].stop)
+						animations[i].stop();
+
+				var labels = viewConfig.viewObject && viewConfig.viewObject.labels || [];
+				for (var i = 0; i < labels.length; i++)
+				{
+					if (labels[i].div && labels[i].div.parentNode)
+						labels[i].div.parentNode.removeChild(labels[i].div);
+					labels[i].div = null;
+				}
+
+				if (canvas.parentNode)
+					canvas.parentNode.removeChild(canvas);
+				if (renderer.dispose)
+					renderer.dispose();
+
+				viewScene.disposed = true;
+			}
+
+			canvas.style.touchAction = 'none';
+			canvas.style.cursor = 'grab';
+			canvas.addEventListener('wheel', onWheel, {passive: false});
+			canvas.addEventListener('pointerdown', onPointerDown, false);
+			canvas.addEventListener('pointermove', onPointerMove, false);
+			canvas.addEventListener('pointerup', endDrag, false);
+			canvas.addEventListener('pointercancel', endDrag, false);
+			canvas.addEventListener('lostpointercapture', endDrag, false);
+			canvas.addEventListener('contextmenu', onContextMenu, false);
+
 			function render()
 			{
-				// Crappy detection if view is destroyed...
-				if (viewerDestroyed || !renderer.domElement.parentNode.baseURI)
-				{
-					viewerDestroyed = true;
+				if (viewerDestroyed || !canvas.parentNode)
 					return;
-				}
 
 				var delta = clock.getDelta();
 
-				if (viewConfig.rotate)
-					viewConfig.rotation += delta * 0.5;
+				if (viewConfig.rotate && !dragging)
+					viewConfig.rotation = wrapAngle(viewConfig.rotation + delta * 0.5);
 
-				camera.position.x = Math.cos(viewConfig.rotation) * viewConfig.distance;
-				camera.position.y = viewConfig.distance / 4;
-				camera.position.z = Math.sin(viewConfig.rotation) * viewConfig.distance;
+				var distance = isFinite(viewConfig.distance) && viewConfig.distance > 0 ? viewConfig.distance : viewConfig.minDistance;
+				distance = Math.max(viewConfig.minDistance, Math.min(viewConfig.maxDistance, distance));
+				viewConfig.distance = distance;
+				var horizontalDistance = distance * Math.cos(viewConfig.pitch);
+				camera.position.x = Math.cos(viewConfig.rotation) * horizontalDistance;
+				camera.position.y = Math.sin(viewConfig.pitch) * distance;
+				camera.position.z = Math.sin(viewConfig.rotation) * horizontalDistance;
+				camera.position.add(target);
 
-				camera.lookAt(scene.position);
+				camera.lookAt(target);
+				camera.rotateZ(viewConfig.roll);
 
 				var timer = Date.now() * 0.0005;
 
@@ -2055,14 +2258,21 @@ module.factory('rendererService', ['$rootScope', '$q', 'modService', '$filter', 
 				'renderer': renderer,
 				'camera': camera,
 				'viewConfig': viewConfig,
+				'dispose': dispose,
+				'disposed': false,
 			};
 
 			function animate()
 			{
 				if (viewerDestroyed)
 					return;
+				if (!canvas.parentNode)
+				{
+					dispose();
+					return;
+				}
 
-				requestAnimationFrame( animate );
+				animationFrameId = window.requestAnimationFrame(animate);
 
 				if (viewConfig.update)
 					viewConfig.update(viewScene);

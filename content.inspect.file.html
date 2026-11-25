@@ -1,20 +1,24 @@
-<h2>{{node.name}} <span class="loading-icon" ng-class="{'icon-animate': loading}"></h2>
+<div class="file-content-view">
+<div class="file-content-header">
+	<h2>{{node.name}} <span class="loading-icon" ng-class="{'icon-animate': loading}"></span></h2>
 
-<div ng-if="node.fileType == 'collada' || node.fileType == 'pdx-mesh'">
-	<p>
-		<button ng-if="node.fileType == 'collada'" type="button" class="btn btn-primary" ng-click="convertToPdxmesh()">Convert to PdxMesh (.mesh)</button>
-		<button ng-if="node.fileType == 'pdx-mesh'" type="button" class="btn btn-primary" ng-click="convertToCollada()">Convert to Collada (.dae)</button></p>
-	</p>
+	<div ng-if="node.fileType == 'collada' || node.fileType == 'pdx-mesh'">
+		<p>
+			<button ng-if="node.fileType == 'collada'" type="button" class="btn btn-primary" ng-click="convertToPdxmesh()">Convert to PdxMesh (.mesh)</button>
+			<button ng-if="node.fileType == 'pdx-mesh'" type="button" class="btn btn-primary" ng-click="convertToCollada()">Convert to Collada (.dae)</button>
+		</p>
+	</div>
+
+	<dl class="dl-horizontal">
+		<dt>Full path:</dt><dd>{{node.path}}</dd>
+		<dt>Size:</dt><dd>{{node.metadata.size || '?'}} bytes</dd>
+		<dt>Last modified:</dt><dd>{{node.metadata.lastModifiedDate.toLocaleString() || '?'}}</dd>
+		<dt ng-if="node.extension != null">Extension:</dt><dd ng-if="node.extension != null">{{node.extension}}</dd>
+		<dt ng-if="node.fileType != null">File type:</dt><dd ng-if="node.fileType != null">{{node.fileType}}</dd>
+	</dl>
 </div>
 
-<dl class="dl-horizontal">
-	<dt>Full path:</dt><dd>{{node.path}}</dd>
-	<dt>Size:</dt><dd>{{node.metadata.size || '?'}} bytes</dd>
-	<dt>Last modified:</dt><dd>{{node.metadata.lastModifiedDate.toLocaleString() || '?'}}</dd>
-	<dt ng-if="node.extension != null">Extension:</dt><dd ng-if="node.extension != null">{{node.extension}}</dd>
-	<dt ng-if="node.fileType != null">File type:</dt><dd ng-if="node.fileType != null">{{node.fileType}}</dd>
-</dl>
-
+<div class="file-content-body">
 
 <div ng-if="image != null">
 	<h3>Image ({{image.width}}x{{image.height}})</h3>
@@ -36,7 +40,7 @@
 	</div>
 	<span>Meshes: {{viewScene.viewConfig.viewObject.meshCount}} - Triangles: {{viewScene.viewConfig.viewObject.triangleCount}} - Bones: {{viewScene.viewConfig.viewObject.boneCount}}</span>
 
-	<div id="3dview">
+	<div id="3dview" title="Left-drag to orbit; right-drag to pan; Shift+left-drag to roll; scroll to zoom">
 		<div class="view3d-labels"></div>
 	</div>
 	<div ng-show="!selectMultipleAnimations">
@@ -47,7 +51,6 @@
 			<dt ng-if="selectedAnimation">Bones:</dt><dd ng-if="selectedAnimation">{{selectedAnimation.bones}}</dd>
 			<dt ng-if="selectedAnimation">Duration:</dt><dd ng-if="selectedAnimation">{{selectedAnimation.duration.toFixed(2)}} seconds</dd>
 		</div>
-	</div>
 	<div ng-if="selectMultipleAnimations">
 		<h3>Embedded animations</h3>
 		<div>
@@ -128,13 +131,15 @@
 		</ol>
 	</script>
 
-	<div ui-tree data-drag-enabled="false" data-empty-place-holder-enabled="false">
-		<div class="datatree-root-comments" ng-show="node.treeData.comments">
-			<span ng-repeat="c in node.treeData.comments | commentFilter track by $index"># {{c}}<br /></span>
+	<div class="datatree-scroll">
+		<div ui-tree class="datatree-tree" data-drag-enabled="false" data-empty-place-holder-enabled="false">
+			<div class="datatree-root-comments" ng-show="node.treeData.comments">
+				<span ng-repeat="c in node.treeData.comments | commentFilter track by $index"># {{c}}<br /></span>
+			</div>
+			<ol ui-tree-nodes ng-model="node.treeData.subNodes">
+				<li ng-repeat="dataNode in node.treeData.subNodes" ui-tree-node ng-include="'datanodes_renderer.html'" data-collapsed="true"></li>
+			</ol>
 		</div>
-		<ol ui-tree-nodes ng-model="node.treeData.subNodes">
-			<li ng-repeat="dataNode in node.treeData.subNodes" ui-tree-node ng-include="'datanodes_renderer.html'" data-collapsed="true"></li>
-		</ol>
 	</div>
 
 <!--
@@ -147,4 +152,6 @@
 	<h3>Text contents</h3>
 
 	<div class="datatext">{{node.textData}}</div>
+</div>
+</div>
 </div>

@@ -12,7 +12,7 @@ python3 scripts/build_firefox.py
 
 The builder's `--gecko-id` option can override the default when intentionally building a different add-on.
 
-By default this writes `dist/JoroDoxTools-0.8.1-firefox.zip`. Override the destination with `--output path/to/package.zip`. The script validates the Gecko ID, normalizes CRLF to LF in packaged text files, emits a sorted archive with fixed timestamps and stored (uncompressed) entries, tests the ZIP, and prints its SHA-256. This makes builds reproducible across Git checkouts with different line-ending settings, provided file contents and the Gecko ID are otherwise identical.
+By default this writes `dist/JoroDoxTools-0.8.3-firefox.zip`. Override the destination with `--output path/to/package.zip`. The script validates the Gecko ID, normalizes CRLF to LF in packaged text files, emits a sorted archive with fixed timestamps and stored (uncompressed) entries, tests the ZIP, and prints its SHA-256. This makes builds reproducible across Git checkouts with different line-ending settings, provided file contents and the Gecko ID are otherwise identical.
 
 To load the package temporarily, extract it and select the extracted `manifest.json` through `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on**. Temporary installation is for development and does not sign the add-on. Release and Beta Firefox require Mozilla signing, including self-distributed packages.
 
@@ -39,7 +39,7 @@ Firefox 140.0 is the lowest appropriate manifest minimum. The required `browser_
 ## Reproducibility and release checks
 
 1. Build twice from the same checkout using the configured Gecko ID; compare the printed SHA-256 values.
-2. Verify the archive with `python3 -m zipfile -t dist/JoroDoxTools-0.8.1-firefox.zip`.
+2. Verify the archive with `python3 -m zipfile -t dist/JoroDoxTools-0.8.3-firefox.zip`.
 3. Extract it and load the extracted manifest in Firefox 160.0.1. Confirm the toolbar action opens the UI and that no packaged resource is missing.
 4. `web-ext lint` 10.8.0 reported zero errors and 13 warnings on the current Firefox 140.0 package: 12 upstream-library warnings and one Android-only minimum-version warning. The app-owned `innerHTML` warning is gone; mod YAML reads use js-yaml's safe loader. See [FIREFOX_AMO_LINT_AUDIT.md](./FIREFOX_AMO_LINT_AUDIT.md) for the warning-by-warning review; lint success alone is not proof of safety.
 5. Firefox 160.0.1 was reported as current stable on 2026-11-22 and has been used for manual validation. Test future stable releases as they become available before making claims about those versions. Test ESR separately before adding it to the support policy.

@@ -97,6 +97,14 @@ module.factory('mapDrawService', ['$rootScope', 'modService', function($rootScop
 			if (!width)
 				width = 2;
 
+			if (!canvas || !area || !angular.isArray(area.extentMin)
+				|| !angular.isArray(area.extentMax) || !angular.isArray(area.outLine)
+				|| area.extentMin.length < 2 || area.extentMax.length < 2
+				|| !isFinite(area.extentMin[0]) || !isFinite(area.extentMin[1])
+				|| !isFinite(area.extentMax[0]) || !isFinite(area.extentMax[1])
+				|| area.extentMin[0] > area.extentMax[0] || area.extentMin[1] > area.extentMax[1])
+				return canvas;
+
 			color = this.getColor(color);
 
 			var context = canvas.getContext('2d');
@@ -104,7 +112,14 @@ module.factory('mapDrawService', ['$rootScope', 'modService', function($rootScop
 			var widthHalfLeft = Math.ceil((width - 1) / 2);
 			var widthHalfRight = Math.floor((width - 1) / 2);
 
-			var imageData = context.getImageData(area.extentMin[0] - widthHalfLeft, area.extentMin[1] - widthHalfLeft, (1 + area.extentMax[0] - area.extentMin[0]) + widthHalfLeft + widthHalfRight, (1 + area.extentMax[1] - area.extentMin[1]) + widthHalfLeft + widthHalfRight);
+			var startX = Math.max(0, area.extentMin[0] - widthHalfLeft);
+			var startY = Math.max(0, area.extentMin[1] - widthHalfLeft);
+			var endX = Math.min(canvas.width, area.extentMax[0] + widthHalfRight + 1);
+			var endY = Math.min(canvas.height, area.extentMax[1] + widthHalfRight + 1);
+			if (startX >= endX || startY >= endY)
+				return canvas;
+
+			var imageData = context.getImageData(startX, startY, endX - startX, endY - startY);
 
 
 			var len = area.outLine.length;
@@ -112,8 +127,8 @@ module.factory('mapDrawService', ['$rootScope', 'modService', function($rootScop
 			{
 				var offset = area.outLine[i];
 
-				var x = (offset % canvas.width) - (area.extentMin[0] - widthHalfLeft);
-				var y = Math.floor(offset / canvas.width) - (area.extentMin[1] - widthHalfLeft);
+				var x = (offset % canvas.width) - startX;
+				var y = Math.floor(offset / canvas.width) - startY;
 
 				var localOffset = ((y * imageData.width) + x);
 
@@ -121,6 +136,10 @@ module.factory('mapDrawService', ['$rootScope', 'modService', function($rootScop
 				{
 					for (var h = -widthHalfLeft; h <= widthHalfRight; h++)
 					{
+						var drawX = x + w;
+						var drawY = y + h;
+						if (drawX < 0 || drawX >= imageData.width || drawY < 0 || drawY >= imageData.height)
+							continue;
 						var widthOffset = (localOffset + w + h*imageData.width) * 4;
 
 						imageData.data[widthOffset + 0] = color[0];
@@ -131,7 +150,7 @@ module.factory('mapDrawService', ['$rootScope', 'modService', function($rootScop
 				}
 			}
 
-			context.putImageData(imageData, area.extentMin[0] - widthHalfLeft, area.extentMin[1] - widthHalfLeft);
+			context.putImageData(imageData, startX, startY);
 
 			return canvas;
 		},
@@ -152,21 +171,25 @@ module.factory('mapDrawService', ['$rootScope', 'modService', function($rootScop
 		'inlineProvinceSolo': function (canvas, provinceId, color, width) {
 			return modService.getData(modService.data.map.provinceMapping).then(function (dataNode) {
 				provinceId = parseInt(provinceId);
-				if (provinceId && dataNode.areaByProvinceId[provinceId])
-					this.inlineAreaSolo(canvas, dataNode.areaByProvinceId[provinceId], color, width);
+				var area = dataNode.areaByProvinceId[provinceId];
+				if (provinceId && area)
+					this.inlineAreaSolo(canvas, area, color, width);
 			}.bind(this));
 		},
 		'cacheCanvas': function (canvas) {
-			if (!this.canvasCache[canvas.id] || this.canvasCache[canvas.id].canvas != canvas)
+			var cached = this.canvasCache[canvas.id];
+			if (!cached || cached.canvas != canvas
+				|| cached.width != canvas.width || cached.height != canvas.height)
 			{
 				var context = canvas.getContext('2d');
-
 				var imageData = context.getImageData(0, 0, canvas.width, canvas.height);
 
 				this.canvasCache[canvas.id] = {
 					'canvas': canvas,
 					'imageData': imageData,
 					'context': context,
+					'width': canvas.width,
+					'height': canvas.height,
 				};
 			}
 
@@ -225,19 +248,27 @@ module.factory('mapDrawService', ['$rootScope', 'modService', function($rootScop
 		},
 		'getAreaFromCoords': function (analytics, x, y) {
 
+			if (!analytics || !analytics.byCoords || !isFinite(x) || !isFinite(y) || x < 0 || y < 0)
+				return null;
+			x = Math.floor(x);
+			y = Math.floor(y);
+			var row = analytics.byCoords[y];
+			if (!row)
+				return null;
+
 			var area = null;
-			for (var startX in analytics.byCoords[y])
+			for (var startX in row)
 			{
-				if (analytics.byCoords[y].hasOwnProperty(startX))
+				if (row.hasOwnProperty(startX))
 				{
 					if (x < startX)
 						return area;
 
-					area = analytics.byCoords[y][startX];
+					area = row[startX];
 				}
 			}
 
-			return null;
+			return area;
 		},
 		'fillProvinces': function (canvas, provinces, color, noDraw) {
 			color = this.getColor(color);

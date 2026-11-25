@@ -88,30 +88,53 @@ div.window-body div.window-box h2 {
 	background-color: #eee;
 }
 
-.datatree-item-name {
-	display: inline-block;
-	width: 200px;
-	vertical-align: top;
-	white-space: nowrap;
+.datatree-scroll {
+	max-width: none;
+	overflow: visible;
 }
 
-.datatree-depth-1 .datatree-item-name {
-	width: 180px;
+.file-content-view {
+	position: absolute;
+	top: 10px;
+	right: 10px;
+	bottom: 10px;
+	left: 10px;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
 }
-.datatree-depth-2 .datatree-item-name {
-	width: 160px;
+
+.file-content-header {
+	flex: 0 0 auto;
 }
-.datatree-depth-3 .datatree-item-name {
-	width: 140px;
+
+.file-content-body {
+	flex: 1 1 auto;
+	min-width: 0;
+	min-height: 0;
+	overflow: auto;
 }
-.datatree-depth-4 .datatree-item-name {
-	width: 120px;
+
+.datatree-item {
+	display: grid;
+	grid-template-columns: 20px max-content 100px max-content max-content;
+	align-items: start;
+	white-space: normal;
 }
-.datatree-depth-5 .datatree-item-name {
-	width: 100px;
+
+.datatree-tree {
+	width: max-content;
+	min-width: 100%;
 }
-.datatree-depth-6 .datatree-item-name {
-	width: 80px;
+
+.datatree-item-name {
+	display: inline-block;
+	width: max-content;
+	min-width: 200px;
+	vertical-align: top;
+	white-space: nowrap;
 }
 
 .datatree-item-name .glyphicon {
@@ -120,30 +143,28 @@ div.window-body div.window-box h2 {
 }
 
 .datatree-item-data {
-	display: inline-block;
-	width: calc(50% - 100px);
+	display: block;
 	color: #340933;
-	vertical-align: top;
+	white-space: nowrap;
 }
 
 .datatree-root-comments {
 	color: #008000;
 	padding-left: 20px;
 	margin-bottom: 15px;
+	white-space: pre;
 }
 
 .datatree-item-comments {
-	display: inline-block;
-	width: calc(50% - 200px);
+	display: block;
 	color: #008000;
-	vertical-align: top;
+	white-space: nowrap;
 }
 
 
 
 .datatree-item-type {
-	display: inline-block;
-	width: 100px;
+	display: block;
 	color: #408000;
 }
 
@@ -183,17 +204,22 @@ div.window-body div.window-box h2 {
 .map-label {
 	position: absolute;
 	color: black;
-	text-shadow: 0.5px 0.5px rgba(255,255, 255, 0.5);
+	text-shadow: 0.05em 0.05em rgba(255,255, 255, 0.5);
 	text-align: center;
 	display: inline !important;
 	background-color: rgba(225,255, 255, 0.2) !important;
 	width: auto !important;
 	height: auto !important;
 	font-size: 11px;
-	border-radius: 3px;
-	padding-left: 2px;
-	padding-right: 2px;
-	border: 1px solid rgba(255,255, 255, 0.3);
+	border-radius: 0.25em;
+	padding-left: 0.18em;
+	padding-right: 0.18em;
+	border: 0.08em solid rgba(255,255, 255, 0.3);
+}
+
+.map-analysis-labels .map-label {
+	font-size: inherit;
+	transform: translate(-50%, -50%);
 }
 
 .map-label.hovered {

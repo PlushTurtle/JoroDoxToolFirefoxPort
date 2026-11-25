@@ -120,12 +120,42 @@ myMod.config(['$stateProvider', function ($stateProvider) {
 }]);
 
 // File inspector
-myMod.controller('FileInspect', function ($scope, node, animation, modService, pdxDataService, pdxScriptService, $timeout, rendererService, $state, $stateParams) {
+myMod.controller('FileInspect', function ($scope, node, animation, modService, pdxDataService, pdxScriptService, $timeout, rendererService, $state, $stateParams, $q) {
 	$scope.node = node;
 	$scope.loading = true;
 	$scope.showJson = false;
 	$scope.viewScene = null;
 	$scope.image = null;
+
+	var viewScopeDestroyed = false;
+	$scope.$on('$destroy', function () {
+		viewScopeDestroyed = true;
+		if ($scope.viewScene)
+		{
+			$scope.viewScene.dispose();
+			$scope.viewScene = null;
+		}
+	});
+
+	function createViewScene() {
+		if (viewScopeDestroyed)
+			return $q.when(null);
+
+		return rendererService.createViewScene(document.getElementById('3dview'), 800, 600).then(function (viewScene) {
+			if (viewScopeDestroyed)
+			{
+				viewScene.dispose();
+				return null;
+			}
+
+			$scope.viewScene = viewScene;
+			return viewScene;
+		});
+	}
+
+	function isViewSceneActive(viewScene) {
+		return !viewScopeDestroyed && viewScene && !viewScene.disposed;
+	}
 
 	modService.setCurrent($scope.node);
 
@@ -249,6 +279,9 @@ myMod.controller('FileInspect', function ($scope, node, animation, modService, p
 			{
 				$scope.loading = true;
 				modService.getFileBuffer(animation.node.path).then(function (buffer) {
+					if (viewScopeDestroyed || !$scope.viewScene || $scope.viewScene.disposed)
+						return;
+
 					animation.node.treeData = pdxDataService.readFromBuffer(buffer);
 					animation.node.treeDataType = 'complex';
 					animation.fps = animation.node.treeData.props.info.props.fps;
@@ -287,11 +320,16 @@ myMod.controller('FileInspect', function ($scope, node, animation, modService, p
 
 				if ('object' in node.treeData.props)
 				{
-					rendererService.createViewScene(document.getElementById('3dview'), 800, 600).then(function (viewScene) {
-						$scope.viewScene = viewScene;
+					createViewScene().then(function (viewScene) {
+						if (!viewScene)
+							return;
+
 						rendererService.loadPdxMesh(node.treeData, node.parent.path).then(function (viewObject) {
+							if (!isViewSceneActive(viewScene))
+								return;
+
 							viewScene.scene.add(viewObject.object);
-							viewScene.viewConfig.distance = viewObject.distance * 4;
+							rendererService.setViewSceneModelDistance(viewScene, viewObject.distance);
 							viewScene.viewConfig.update = viewObject.update;
 							viewScene.viewConfig.viewObject = viewObject;
 
@@ -355,12 +393,20 @@ myMod.controller('FileInspect', function ($scope, node, animation, modService, p
 				$scope.selectedAnimations.splice(index, 1);
 		};
 
-		rendererService.createViewScene(document.getElementById('3dview'), 800, 600).then(function (viewScene) {
-			$scope.viewScene = viewScene;
+		createViewScene().then(function (viewScene) {
+			if (!viewScene)
+				return;
+
 			modService.getFileText(node.path).then(function (text) {
+				if (!isViewSceneActive(viewScene))
+					return;
+
 				rendererService.loadCollada(text, node.parent.path).then(function (viewObject) {
+					if (!isViewSceneActive(viewScene))
+						return;
+
 					viewScene.scene.add(viewObject.object);
-					viewScene.viewConfig.distance = viewObject.distance * 4;
+					rendererService.setViewSceneModelDistance(viewScene, viewObject.distance);
 					viewScene.viewConfig.update = viewObject.update;
 					viewScene.viewConfig.viewObject = viewObject;
 
@@ -412,12 +458,20 @@ myMod.controller('FileInspect', function ($scope, node, animation, modService, p
 				$scope.selectedAnimations.splice(index, 1);
 		};
 
-		rendererService.createViewScene(document.getElementById('3dview'), 800, 600).then(function (viewScene) {
-			$scope.viewScene = viewScene;
+		createViewScene().then(function (viewScene) {
+			if (!viewScene)
+				return;
+
 			modService.getFileText(node.path).then(function (text) {
+				if (!isViewSceneActive(viewScene))
+					return;
+
 				rendererService.loadThreeJson(text, node.parent.path).then(function (viewObject) {
+					if (!isViewSceneActive(viewScene))
+						return;
+
 					viewScene.scene.add(viewObject.object);
-					viewScene.viewConfig.distance = viewObject.distance * 4;
+					rendererService.setViewSceneModelDistance(viewScene, viewObject.distance);
 					viewScene.viewConfig.update = viewObject.update;
 					viewScene.viewConfig.viewObject = viewObject;
 
@@ -565,10 +619,10 @@ myMod.controller('FileInspect', function ($scope, node, animation, modService, p
 	};
 
 	$scope.zoomIn = function() {
-		$scope.viewScene.viewConfig.distance *= 0.9;
+		rendererService.zoomViewScene($scope.viewScene, 0.9);
 	};
 	$scope.zoomOut = function() {
-		$scope.viewScene.viewConfig.distance *= 1.1;
+		rendererService.zoomViewScene($scope.viewScene, 1.1);
 	};
 });
 
@@ -881,7 +935,11 @@ myMod.controller('CountriesHistoryTool', ['$scope', 'modService', 'pdxScriptServ
 }]);
 
 // MapCheck
-myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeout', '$q', '$rootScope', function ($scope, modService, mapDrawService, $timeout, $q, $rootScope) {
+myMod.controller('MapCheck', ['$scope', 'modService', 'mapAnalyzeService', 'mapDrawService', '$timeout', '$q', '$rootScope', function ($scope, modService, mapAnalyzeService, mapDrawService, $timeout, $q, $rootScope) {
+	var handleMapError = function (error) {
+		$scope.loading = false;
+		modService.errorCallback(error);
+	};
 
 	// Map analytics data
 	$scope.analytics = null;
@@ -900,7 +958,16 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 	// Current map view
 	$scope.view = 'provinces';
 
-	$scope.dataViewInfo = {type: 'province', title: '', text: '', province: null};
+	$scope.dataViewInfo = {
+		type: 'province',
+		title: '',
+		text: '',
+		province: null,
+		provinceName: '',
+		ownerTag: '',
+		countryName: '',
+		country: null,
+	};
 	$scope.dataViewLeft = $scope.dataViewInfo;
 
 
@@ -928,11 +995,60 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 
 	$scope.views = [
 		'provinces',
-		'countries',
 		'baseTax',
-		'manpower',
+		'baseProduction',
+		'baseManpower',
+		'development',
+		'tradeGoods',
+		'provinceTerrain',
 		'climate',
+		'weather',
+		'monsoons',
+		'culture',
+		'religion',
+		'government',
+		'countries',
+		'empty',
 	];
+	$scope.viewLabels = {
+		provinces: 'Provinces',
+		countries: 'Countries',
+		baseTax: 'Base Tax',
+		baseManpower: 'Base Manpower',
+		baseProduction: 'Base Production',
+		climate: 'Climate',
+		weather: 'Weather',
+		monsoons: 'Monsoons',
+		provinceTerrain: 'Province Terrain',
+		religion: 'Religion',
+		government: 'Government',
+		culture: 'Culture',
+		tradeGoods: 'Trade Goods',
+		development: 'Development',
+		empty: 'Empty',
+	};
+	$scope.climateOptions = [
+		{value: 'temperate', label: 'Temperate'},
+		{value: 'arid', label: 'Arid'},
+		{value: 'tropical', label: 'Tropical'},
+		{value: 'arctic', label: 'Arctic'},
+	];
+	$scope.winterOptions = [
+		{value: 'no_winter', label: 'No winter'},
+		{value: 'mild_winter', label: 'Mild winter'},
+		{value: 'normal_winter', label: 'Normal winter'},
+		{value: 'severe_winter', label: 'Severe winter'},
+	];
+	$scope.monsoonOptions = [
+		{value: 'no_monsoon', label: 'No monsoon'},
+		{value: 'mild_monsoon', label: 'Mild monsoon'},
+		{value: 'normal_monsoon', label: 'Normal monsoon'},
+		{value: 'severe_monsoon', label: 'Severe monsoon'},
+	];
+	$scope.terrainOptions = [];
+	$scope.provinceTerrainAvailable = false;
+	$scope.valueLegend = null;
+	$scope.regionOptions = [{value: '', label: 'No region'}];
 
 	$scope.messages = '';
 	$scope.output = '';
@@ -957,24 +1073,1036 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 	$scope.hoverCanvas = document.getElementById('PanZoomCanvasHover');
 	$scope.selectCanvas = document.getElementById('PanZoomCanvasSelect');
 	$scope.mapCanvas = document.getElementById('PanZoomCanvas');
+	var syncMapCanvasDimensions = function (image) {
+		if (!image.width || !image.height)
+			return $q.reject(new Error('The map image has invalid dimensions.'));
+
+		return $timeout(function () {
+			var canvasIds = ['PanZoomCanvas', 'PanZoomCanvasSelect', 'PanZoomCanvasHover'];
+			var mapCanvas = document.getElementById('PanZoomCanvas');
+			if (!mapCanvas)
+				throw new Error('The map canvas is not available after the map image loaded.');
+
+			angular.forEach(canvasIds, function (canvasId) {
+				var canvas = document.getElementById(canvasId);
+				if (canvas && (canvas.width != image.width || canvas.height != image.height))
+				{
+					mapDrawService.clearCanvasCache(canvas);
+					canvas.width = image.width;
+					canvas.height = image.height;
+				}
+			});
+
+			$scope.mapCanvas = mapCanvas;
+			$scope.selectCanvas = document.getElementById('PanZoomCanvasSelect');
+			$scope.hoverCanvas = document.getElementById('PanZoomCanvasHover');
+			return mapCanvas;
+		});
+	};
+	var getMapCoordinates = function (event) {
+		var canvas = document.getElementById('PanZoomCanvas');
+		if (!event || !canvas || !canvas.width || !canvas.height
+			|| !isFinite(event.clientX) || !isFinite(event.clientY))
+			return null;
+		var bounds = canvas.getBoundingClientRect();
+		if (!bounds.width || !bounds.height)
+			return null;
+		var x = Math.floor((event.clientX - bounds.left) * canvas.width / bounds.width);
+		var y = Math.floor((event.clientY - bounds.top) * canvas.height / bounds.height);
+		if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height)
+			return null;
+		return {x: x, y: y};
+	};
 
 	$scope.overlayImage = null;
-	modService.getImageByPath('map/terrain/colormap.png').then(function (img) {
-		$scope.overlayImage = img.src;
-	})
+	var terrainColormapCandidates = [
+		'map/terrain/colormap.png',
+		'map/terrain/colormap_summer.dds',
+		'map/terrain/colormap_spring.dds',
+		'map/terrain/colormap_autumn.dds',
+		'map/terrain/colormap_winter.dds',
+	];
+	var loadTerrainColormap = function (candidateIndex) {
+		if (candidateIndex >= terrainColormapCandidates.length)
+		{
+			console.info('[map-analysis] No supported terrain colormap was found.');
+			$scope.options.showTerrainOverlay = false;
+			return $q.when();
+		}
 
-	modService.fileExists('map/seas.png').then(function (exists) {
-		$scope.hasSeasPng = exists;
-	});
+		var path = terrainColormapCandidates[candidateIndex];
+		return modService.getFileEntry(path, null, true).then(function (entry) {
+			if (!entry)
+			{
+				if (candidateIndex == 0)
+					console.info('[map-analysis] Missing optional file: '+ path);
+				return loadTerrainColormap(candidateIndex + 1);
+			}
+
+			var imagePromise = path.substr(-4) == '.png'
+				? modService.getImageByPath(path).then(function (image) { return image.src; })
+				: modService.getFileBuffer(path).then(function (buffer) {
+					return mapAnalyzeService.decodeDxt1ToDataUrl(buffer);
+				});
+
+			return imagePromise.then(function (imageUrl) {
+				$scope.overlayImage = imageUrl;
+			}, function (error) {
+				console.warn('[map-analysis] Unable to load optional file: '+ path, error);
+				return loadTerrainColormap(candidateIndex + 1);
+			});
+		}, handleMapError);
+	};
+	loadTerrainColormap(0);
+
+	var environmentViewPalettes = {
+		climate: {
+			key: '_climate',
+			defaultCategory: 'temperate',
+			colors: {
+				temperate: [102, 127, 68, 255],
+				arid: [216, 214, 66, 255],
+				tropical: [102, 178, 48, 255],
+				arctic: [255, 255, 255, 255],
+			},
+		},
+		weather: {
+			key: '_winter',
+			defaultCategory: 'no_winter',
+			colors: {
+				no_winter: [0, 0, 0, 255],
+				mild_winter: [85, 85, 85, 255],
+				normal_winter: [170, 170, 170, 255],
+				severe_winter: [255, 255, 255, 255],
+			},
+		},
+		monsoons: {
+			key: '_monsoon',
+			defaultCategory: 'no_monsoon',
+			colors: {
+				no_monsoon: [0, 0, 0, 255],
+				mild_monsoon: [0, 0, 85, 255],
+				normal_monsoon: [0, 0, 170, 255],
+				severe_monsoon: [0, 0, 255, 255],
+			},
+		},
+	};
+	var provinceValueColors = [
+		'#7A0063',
+		'#6A0183',
+		'#3E038D',
+		'#0D0596',
+		'#0839A0',
+		'#0A7AA9',
+		'#0DB2A5',
+		'#11BC6E',
+		'#14C632',
+		'#3ECF18',
+		'#8AD91B',
+		'#DAE220',
+		'#ECA824',
+		'#F56329',
+		'#FF2E41',
+		'#FF2E41',
+		'#FF2E41',
+		'#FF2E41',
+		'#FF2E41',
+		'#FF2E41',
+	];
+	var getNumericValueOrZero = function (value) {
+		if (value === null || value === undefined || value === '')
+			return 0;
+		var number = Number(value);
+		return isFinite(number) ? number : 0;
+	};
+	var getProvinceState = function (province) {
+		return province && (province._effectiveData || province.data && province.data.data) || {};
+	};
+	var getProvinceDevelopmentValue = function (province) {
+		var data = getProvinceState(province);
+		return getNumericValueOrZero(data.base_tax)
+			+ getNumericValueOrZero(data.base_production)
+			+ getNumericValueOrZero(data.base_manpower);
+	};
+	$scope.getProvinceDevelopment = getProvinceDevelopmentValue;
+	var provinceTerrainState = null;
+	var provinceTerrainLoadPromise = null;
+	var findPdxNode = function (node, name) {
+		if (!node || !node.subNodes)
+			return null;
+		for (var i = 0; i < node.subNodes.length; i++)
+		{
+			if (node.subNodes[i].name == name)
+				return node.subNodes[i];
+		}
+		return null;
+	};
+	var terrainColor = function (value) {
+		if (!value)
+			return null;
+		var values = angular.isArray(value) ? value : [value];
+		if (values.length < 3)
+			return null;
+		var color = [];
+		for (var i = 0; i < 3; i++)
+		{
+			var channel = Number(values[i]);
+			if (!isFinite(channel) || channel < 0 || channel > 255)
+				return null;
+			color.push(Math.round(channel));
+		}
+		return color;
+	};
+	var getTerrainPath = function (value, fallback) {
+		var path = String(value || fallback).replace(/^["']|["']$/g, '').replace(/\\/g, '/');
+		path = path.replace(/^\/+/, '');
+		if (path.indexOf('map/') != 0)
+			path = 'map/' + path;
+		return path;
+	};
+	var parseTerrainBitmap = function (buffer, expectedWidth, expectedHeight) {
+		if (!buffer || buffer.byteLength < 54)
+			throw new Error('Terrain bitmap is too small to contain a BMP header.');
+		var view = new DataView(buffer);
+		var bytes = new Uint8Array(buffer);
+		if (view.getUint16(0, true) != 0x4d42)
+			throw new Error('Terrain bitmap is not a BMP file.');
+		var pixelOffset = view.getUint32(10, true);
+		var dibSize = view.getUint32(14, true);
+		var width = view.getInt32(18, true);
+		var signedHeight = view.getInt32(22, true);
+		var planes = view.getUint16(26, true);
+		var bitsPerPixel = view.getUint16(28, true);
+		var compression = view.getUint32(30, true);
+		var height = Math.abs(signedHeight);
+		if (dibSize < 40 || width < 1 || height < 1 || planes != 1
+			|| bitsPerPixel != 8 || compression != 0)
+			throw new Error('Terrain bitmap must be an uncompressed 8-bit BMP.');
+		if (expectedWidth && width != expectedWidth || expectedHeight && height != expectedHeight)
+			throw new Error('Terrain bitmap dimensions do not match map/provinces.bmp.');
+
+		var paletteOffset = 14 + dibSize;
+		var colorsUsed = view.getUint32(46, true);
+		var paletteLength = colorsUsed || 256;
+		if (paletteOffset + paletteLength * 4 > pixelOffset)
+			throw new Error('Terrain bitmap has an invalid color table.');
+		var palette = [];
+		for (var i = 0; i < paletteLength; i++)
+		{
+			var offset = paletteOffset + i * 4;
+			palette[i] = [bytes[offset + 2], bytes[offset + 1], bytes[offset]];
+		}
+		var rowStride = Math.floor((width * bitsPerPixel + 31) / 32) * 4;
+		if (pixelOffset + rowStride * height > buffer.byteLength)
+			throw new Error('Terrain bitmap pixel data is truncated.');
+
+		return {
+			buffer: buffer,
+			pixels: new Uint8Array(buffer),
+			pixelOffset: pixelOffset,
+			width: width,
+			height: height,
+			signedHeight: signedHeight,
+			rowStride: rowStride,
+			palette: palette,
+		};
+	};
+	var getTerrainPixelIndex = function (bitmap, x, y) {
+		if (x < 0 || x >= bitmap.width || y < 0 || y >= bitmap.height)
+			return null;
+		var bitmapY = bitmap.signedHeight > 0 ? bitmap.height - 1 - y : y;
+		return bitmap.pixels[bitmap.pixelOffset + bitmapY * bitmap.rowStride + x];
+	};
+	var buildProvinceTerrain = function (bitmapPath, bitmap, mapping, provinces, terrainNode) {
+		var terrainRoot = terrainNode && terrainNode.data;
+		var categoriesNode = findPdxNode(terrainRoot, 'categories');
+		var graphicalTerrainNode = findPdxNode(terrainRoot, 'terrain');
+		var categoryColors = {};
+		var categoryOrder = [];
+		var overrideByProvince = {};
+		var terrainByIndex = {};
+		var optionByValue = {};
+		angular.forEach(categoriesNode && categoriesNode.subNodes || [], function (category) {
+			var color = terrainColor(category.data && category.data.color);
+			if (color)
+				categoryColors[category.name] = color;
+			categoryOrder.push(category);
+			var overrideIds = category.data && category.data.terrain_override;
+			if (overrideIds !== null && overrideIds !== undefined)
+			{
+				overrideIds = angular.isArray(overrideIds) ? overrideIds : [overrideIds];
+				angular.forEach(overrideIds, function (id) {
+					var provinceId = parseInt(id, 10);
+					if (isFinite(provinceId) && provinceId > 0 && !overrideByProvince[provinceId])
+						overrideByProvince[provinceId] = category.name;
+				});
+			}
+		});
+		angular.forEach(bitmap && graphicalTerrainNode && graphicalTerrainNode.subNodes || [], function (definition) {
+			var data = definition.data || {};
+			var categoryName = data.type || definition.name;
+			var indices = angular.isArray(data.color) ? data.color : data.color == null ? [] : [data.color];
+			angular.forEach(indices, function (indexValue) {
+				var index = Number(indexValue);
+				if (!isFinite(index) || Math.floor(index) != index || index < 0 || index > 255)
+					return;
+				var color = categoryColors[categoryName] || bitmap.palette[index];
+				var definitionForIndex = {
+					value: categoryName,
+					label: categoryName.replace(/_/g, ' '),
+					color: color || [150, 150, 150],
+					bitmapIndex: index,
+				};
+				if (!terrainByIndex[index])
+					terrainByIndex[index] = definitionForIndex;
+				if (!optionByValue[categoryName]
+					|| index < optionByValue[categoryName].bitmapIndex)
+				{
+					optionByValue[categoryName] = definitionForIndex;
+				}
+			});
+		});
+		angular.forEach(overrideByProvince, function (categoryName) {
+			if (optionByValue[categoryName])
+				return;
+			var color = categoryColors[categoryName] || [150, 150, 150];
+			optionByValue[categoryName] = {
+				value: categoryName,
+				label: categoryName.replace(/_/g, ' '),
+				color: color,
+				bitmapIndex: null,
+				overrideOnly: true,
+			};
+		});
+
+		var indexCountsByProvince = {};
+		var observedIndices = {};
+		angular.forEach(bitmap && mapping.areaByProvinceId || {}, function (area, provinceId) {
+			if (!area || !angular.isArray(area.offsetRanges))
+				return;
+			var counts = {};
+			angular.forEach(area.offsetRanges, function (range) {
+				var y = range[0];
+				for (var x = range[1]; x <= range[2]; x++)
+				{
+					var index = getTerrainPixelIndex(bitmap, x, y);
+					if (index === null)
+						continue;
+					counts[index] = (counts[index] || 0) + 1;
+					observedIndices[index] = true;
+				}
+			});
+			indexCountsByProvince[provinceId] = counts;
+		});
+
+		angular.forEach(observedIndices, function (unused, indexText) {
+			var index = Number(indexText);
+			if (terrainByIndex[index])
+				return;
+			var color = bitmap.palette[index] || [150, 150, 150];
+			var option = {
+				value: 'index:' + index,
+				label: 'Terrain index ' + index,
+				color: color,
+				bitmapIndex: index,
+			};
+			terrainByIndex[index] = option;
+			optionByValue[option.value] = option;
+		});
+
+		var terrainOptions = [];
+		angular.forEach(optionByValue, function (option) {
+			terrainOptions.push(option);
+		});
+		terrainOptions.sort(function (a, b) { return a.label.localeCompare(b.label); });
+
+		var terrainByProvince = {};
+		var mappedProvinceCount = 0;
+		angular.forEach(provinces.byId, function (province, provinceId) {
+			var counts = indexCountsByProvince[provinceId];
+			var selectedIndex = null;
+			var selectedCount = -1;
+			angular.forEach(counts || {}, function (count, indexText) {
+				var index = Number(indexText);
+				if (terrainByIndex[index] && count > selectedCount)
+				{
+					selectedIndex = index;
+					selectedCount = count;
+				}
+			});
+			var overrideCategory = overrideByProvince[provinceId];
+			var definition = selectedIndex === null ? null : terrainByIndex[selectedIndex];
+			if (!overrideCategory && !definition)
+			{
+				province._terrain = null;
+				return;
+			}
+			var value = overrideCategory || definition.value;
+			var color = overrideCategory
+				? categoryColors[overrideCategory] || [150, 150, 150]
+				: definition.color;
+			var provinceTerrain = {
+				_type: 'classification',
+				_value: value,
+				name: value,
+				color: color,
+				bitmapIndex: selectedIndex,
+				_savedValue: value,
+				_savedIndex: selectedIndex,
+				_override: overrideCategory || null,
+				_savedOverride: overrideCategory || null,
+			};
+			province._terrain = provinceTerrain;
+			mappedProvinceCount++;
+			terrainByProvince[provinceId] = {
+				value: value,
+				bitmapIndex: selectedIndex,
+				color: color.slice(),
+				override: overrideCategory || null,
+			};
+		});
+
+		$scope.terrainOptions = terrainOptions;
+		var available = mappedProvinceCount > 0;
+		$scope.provinceTerrainAvailable = available;
+		$scope.environmentDataAvailable = $scope.environmentDataAvailable || {};
+		$scope.environmentDataAvailable._terrain = available;
+		return {
+			available: available,
+			bitmapPath: bitmapPath,
+			bitmap: bitmap,
+			terrainNode: terrainNode,
+			areaByProvinceId: mapping.areaByProvinceId,
+			optionByValue: optionByValue,
+			categoryOrder: categoryOrder,
+			overrideByProvince: overrideByProvince,
+			terrainByIndex: terrainByIndex,
+			terrainByProvince: terrainByProvince,
+		};
+	};
+	var applyProvinceTerrainToHistory = function (state) {
+		var provinces = modService.data.history.provinces;
+		if (!provinces || !provinces.byId)
+			return;
+		angular.forEach(provinces.byId, function (province, provinceId) {
+			var terrain = state.terrainByProvince[provinceId];
+			province._terrain = terrain ? {
+				_type: 'classification',
+				_value: terrain.value,
+				name: terrain.value,
+				color: terrain.color.slice(),
+				bitmapIndex: terrain.bitmapIndex,
+				_savedValue: terrain.value,
+				_savedIndex: terrain.bitmapIndex,
+				_override: terrain.override || null,
+				_savedOverride: terrain.override || null,
+			} : null;
+		});
+	};
+	var loadProvinceTerrain = function (loadedEnvironment) {
+		if (provinceTerrainState)
+		{
+			applyProvinceTerrainToHistory(provinceTerrainState);
+			$scope.provinceTerrainAvailable = provinceTerrainState.available;
+			return $q.when(provinceTerrainState);
+		}
+		if (provinceTerrainLoadPromise)
+			return provinceTerrainLoadPromise;
+
+		var loadEnvironmentPromise = loadedEnvironment
+			? $q.when(loadedEnvironment)
+			: modService.loadMapEnvironment(['default', 'terrain']);
+		provinceTerrainLoadPromise = loadEnvironmentPromise.then(function (environment) {
+			var defaultData = environment.default && environment.default.data || {};
+			var bitmapPath = getTerrainPath(defaultData.terrain, 'terrain.bmp');
+			var definitionPath = getTerrainPath(defaultData.terrain_definition, 'terrain.txt');
+			return $q.all({
+				entry: modService.getFileEntry(bitmapPath, null, true),
+				mapping: modService.getData(modService.data.map.provinceMapping),
+				provinces: modService.getData(modService.data.history.provinces),
+				provinceImage: modService.getData(modService.data.map.provinces.image).then(function (imageNode) {
+					return modService.getImage(imageNode);
+				}),
+				terrainNode: definitionPath == 'map/terrain.txt' && environment.nodesByName.terrain
+					? $q.when(environment.nodesByName.terrain)
+					: modService.getFileEntry(definitionPath, null, true).then(function (entry) {
+						if (!entry)
+						{
+							console.info('[map-analysis] Missing optional file: ' + definitionPath);
+							return null;
+						}
+						return modService.getPdxScriptDataByPath(definitionPath).catch(function (error) {
+							if (error && error.name == 'NotFoundError')
+							{
+								console.info('[map-analysis] Missing optional file: ' + definitionPath);
+								return null;
+							}
+							throw error;
+						});
+					}),
+			}).then(function (loaded) {
+				if (!loaded.entry)
+					console.info('[map-analysis] Missing optional file: ' + bitmapPath);
+				var bitmapPromise = loaded.entry
+					? modService.getFileBuffer(bitmapPath).then(function (buffer) {
+					var bitmap;
+					try
+					{
+						bitmap = parseTerrainBitmap(buffer, loaded.provinceImage.width, loaded.provinceImage.height);
+					}
+					catch (error)
+					{
+						console.warn('[map-analysis] Terrain bitmap unavailable: ' + error.message);
+					}
+					return bitmap || null;
+				})
+					: $q.when(null);
+				return bitmapPromise.then(function (bitmap) {
+					return buildProvinceTerrain(bitmapPath, bitmap, loaded.mapping, loaded.provinces, loaded.terrainNode);
+				});
+			});
+		}).then(function (state) {
+			provinceTerrainState = state;
+			if (state)
+				applyProvinceTerrainToHistory(state);
+			return state;
+		}, function (error) {
+			provinceTerrainLoadPromise = null;
+			throw error;
+		});
+		return provinceTerrainLoadPromise;
+	};
+	var saveProvinceTerrain = function (provinces) {
+		if (!provinceTerrainState || !provinceTerrainState.available)
+			return $q.when();
+		var changedProvinces = [];
+		angular.forEach(provinces, function (province) {
+			if (!province || !province._terrain)
+				return;
+			var option = provinceTerrainState.optionByValue[province._terrain._value];
+			if (!option)
+				throw new Error('The selected province terrain is not available.');
+			if (province._terrain._savedValue != option.value)
+				changedProvinces.push({province: province, option: option});
+		});
+		if (!changedProvinces.length)
+			return $q.when();
+
+		var bitmapChanges = [];
+		angular.forEach(changedProvinces, function (change) {
+			if (change.option.bitmapIndex !== null && change.option.bitmapIndex !== undefined)
+				bitmapChanges.push(change);
+		});
+		var buffer = null;
+		if (bitmapChanges.length)
+		{
+			if (!provinceTerrainState.bitmap)
+				throw new Error('Terrain bitmap is unavailable for the selected province terrain.');
+			buffer = provinceTerrainState.bitmap.buffer.slice(0);
+			var pixels = new Uint8Array(buffer);
+			angular.forEach(bitmapChanges, function (change) {
+				var area = provinceTerrainState.areaByProvinceId[parseInt(change.province._id, 10)];
+				if (!area || !angular.isArray(area.offsetRanges))
+					throw new Error('Province pixels are unavailable for province ' + change.province._id + '.');
+				angular.forEach(area.offsetRanges, function (range) {
+					var y = range[0];
+					var bitmapY = provinceTerrainState.bitmap.signedHeight > 0
+						? provinceTerrainState.bitmap.height - 1 - y : y;
+					var start = provinceTerrainState.bitmap.pixelOffset
+						+ bitmapY * provinceTerrainState.bitmap.rowStride + range[1];
+					for (var offset = start; offset <= start + range[2] - range[1]; offset++)
+						pixels[offset] = change.option.bitmapIndex;
+				});
+			});
+		}
+
+		var overrideChanged = false;
+		var overrideSnapshots = [];
+		angular.forEach(changedProvinces, function (change) {
+			var provinceId = parseInt(change.province._id, 10);
+			var desiredCategory = change.option.overrideOnly ? change.option.value : null;
+			angular.forEach(provinceTerrainState.categoryOrder, function (category) {
+				var data = category.data || (category.data = {});
+				var rawIds = data.terrain_override;
+				if (rawIds === null || rawIds === undefined)
+				{
+					if (category.name != desiredCategory)
+						return;
+					rawIds = [];
+				}
+				else if (!angular.isArray(rawIds))
+					rawIds = [rawIds];
+
+				var ids = [];
+				var keptTargetId = false;
+				angular.forEach(rawIds, function (id) {
+					if (parseInt(id, 10) != provinceId)
+					{
+						ids.push(id);
+						return;
+					}
+					if (category.name == desiredCategory && !keptTargetId)
+					{
+						ids.push(id);
+						keptTargetId = true;
+					}
+				});
+				if (category.name == desiredCategory && !keptTargetId)
+					ids.push(String(provinceId));
+
+				var changed = ids.length != rawIds.length;
+				if (!changed)
+					angular.forEach(ids, function (id, index) {
+						if (String(id) != String(rawIds[index]))
+							changed = true;
+					});
+				if (changed)
+				{
+					overrideSnapshots.push({
+						data: data,
+						hadValue: Object.prototype.hasOwnProperty.call(data, 'terrain_override'),
+						value: data.terrain_override,
+					});
+					if (ids.length)
+						data.terrain_override = ids;
+					else
+						delete data.terrain_override;
+					overrideChanged = true;
+				}
+			});
+		});
+
+		var restoreTerrainOverrides = function () {
+			for (var i = overrideSnapshots.length - 1; i >= 0; i--)
+			{
+				var snapshot = overrideSnapshots[i];
+				if (snapshot.hadValue)
+					snapshot.data.terrain_override = snapshot.value;
+				else
+					delete snapshot.data.terrain_override;
+			}
+		};
+		if (overrideChanged && !provinceTerrainState.terrainNode)
+		{
+			restoreTerrainOverrides();
+			throw new Error('Terrain definitions are unavailable for saving terrain overrides.');
+		}
+
+		var saves = [];
+		if (bitmapChanges.length)
+			saves.push(modService.writeFileBuffer(provinceTerrainState.bitmapPath, buffer, true));
+		if (overrideChanged)
+			saves.push(modService.saveData(provinceTerrainState.terrainNode));
+		return $q.all(saves).then(function () {
+			if (bitmapChanges.length)
+			{
+				provinceTerrainState.bitmap.buffer = buffer;
+				provinceTerrainState.bitmap.pixels = new Uint8Array(buffer);
+			}
+			angular.forEach(changedProvinces, function (change) {
+				var previousIndex = change.province._terrain._savedIndex;
+				var bitmapIndex = change.option.bitmapIndex !== null
+					&& change.option.bitmapIndex !== undefined
+					? change.option.bitmapIndex
+					: previousIndex;
+				var override = change.option.overrideOnly ? change.option.value : null;
+				change.province._terrain.name = change.option.value;
+				change.province._terrain._value = change.option.value;
+				change.province._terrain.color = change.option.color;
+				change.province._terrain.bitmapIndex = bitmapIndex;
+				change.province._terrain._savedValue = change.option.value;
+				change.province._terrain._savedIndex = bitmapIndex;
+				change.province._terrain._override = override;
+				change.province._terrain._savedOverride = override;
+				if (override)
+					provinceTerrainState.overrideByProvince[parseInt(change.province._id, 10)] = override;
+				else
+					delete provinceTerrainState.overrideByProvince[parseInt(change.province._id, 10)];
+				provinceTerrainState.terrainByProvince[change.province._id] = {
+					value: change.option.value,
+					bitmapIndex: bitmapIndex,
+					color: change.option.color.slice(),
+					override: override,
+				};
+			});
+			return true;
+		}, function (error) {
+			restoreTerrainOverrides();
+			return $q.reject(error);
+		});
+	};
+	var getWaterProvinces = function (defaultData, provinces) {
+		var waterById = {};
+		var addWaterProvince = function (value) {
+			if (angular.isArray(value))
+			{
+				angular.forEach(value, addWaterProvince);
+				return;
+			}
+			var id = angular.isObject(value)
+				? value._id || value.id || value.nr
+				: value;
+			if (id !== null && id !== undefined && /^\d+$/.test(String(id)))
+				waterById[parseInt(id, 10)] = true;
+		};
+		angular.forEach(defaultData.sea_zones, addWaterProvince);
+		angular.forEach(defaultData.sea_starts, addWaterProvince);
+		angular.forEach(defaultData.lakes, addWaterProvince);
+		angular.forEach(provinces.byId, function (province, provinceId) {
+			if (province._isSeaStart || province._isLake)
+				waterById[provinceId] = true;
+		});
+		var waterProvinces = [];
+		angular.forEach(waterById, function (isWater, provinceId) {
+			var province = provinces.byId[provinceId];
+			waterProvinces.push(province || provinceId);
+		});
+		return waterProvinces;
+	};
+	var renderProvinceValueView = function (dataNode, valueKey, label) {
+		$scope.valueLegend = null;
+		mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
+		return modService.getData(modService.data.history.provinces).then(function (provinces) {
+			var maximum = 0;
+			angular.forEach(provinces.byId, function (province) {
+				var value = valueKey == 'development'
+					? getProvinceDevelopmentValue(province)
+					: Number(getProvinceState(province)[valueKey]);
+				if (isFinite(value) && value >= 0)
+					maximum = Math.max(maximum, value);
+			});
+
+			var provinceGroups = [];
+			for (var i = 0; i < provinceValueColors.length; i++)
+				provinceGroups[i] = [];
+			angular.forEach(provinces.byId, function (province) {
+				var rawValue = valueKey == 'development'
+					? getProvinceDevelopmentValue(province)
+					: getProvinceState(province)[valueKey];
+				if (rawValue === null || rawValue === undefined || rawValue === '')
+					return;
+				var value = Number(rawValue);
+				if (!isFinite(value) || value < 0)
+					return;
+				var colorIndex = maximum
+					? Math.min(provinceValueColors.length - 1,
+						Math.round(value / maximum * (provinceValueColors.length - 1)))
+					: 0;
+				provinceGroups[colorIndex].push(province);
+			});
+			var fills = [];
+			angular.forEach(provinceGroups, function (group, colorIndex) {
+				if (group.length)
+					fills.push(mapDrawService.fillProvinces(
+						$scope.mapCanvas,
+						group,
+						provinceValueColors[colorIndex],
+						true
+					));
+			});
+			var stops = [];
+			angular.forEach(provinceValueColors, function (color, colorIndex) {
+				stops.push(color + ' ' + Math.round(colorIndex / (provinceValueColors.length - 1) * 100) + '%');
+			});
+			$scope.valueLegend = {
+				label: label,
+				min: 0,
+				max: maximum,
+				gradient: 'linear-gradient(to right, ' + stops.join(', ') + ')',
+			};
+			return $q.all(fills).then(function () {
+				var defaultData = dataNode.default && dataNode.default.data || {};
+				var waterProvinces = getWaterProvinces(defaultData, provinces);
+				var waterFills = [];
+				if (defaultData.major_rivers)
+					waterFills.push(mapDrawService.fillProvinces($scope.mapCanvas, defaultData.major_rivers, [6, 115, 249, 255], true));
+				if (waterProvinces.length)
+					waterFills.push(mapDrawService.fillProvinces($scope.mapCanvas, waterProvinces, [68, 107, 163, 255], true));
+				return $q.all(waterFills);
+			});
+		}).then(function () {
+			return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
+				$scope.loading = false;
+			});
+		});
+	};
+	var categoryColorCache = {};
+	var getCategoryColor = function (category, definitionColors) {
+		if (definitionColors)
+		{
+			var definedColor = definitionColors[category.toLowerCase()];
+			if (definedColor)
+				return definedColor;
+			return category.toLowerCase() == 'unowned'
+				? [76, 76, 76, 255]
+				: [150, 150, 150, 255];
+		}
+
+		if (categoryColorCache[category])
+			return categoryColorCache[category];
+
+		var hash = 0;
+		for (var i = 0; i < category.length; i++)
+			hash = ((hash << 5) - hash + category.charCodeAt(i)) | 0;
+		var hue = (hash >>> 0) % 360;
+		var saturation = 0.62;
+		var lightness = 0.52;
+		var chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+		var hueSection = hue / 60;
+		var secondary = chroma * (1 - Math.abs(hueSection % 2 - 1));
+		var red = 0, green = 0, blue = 0;
+		if (hueSection < 1) { red = chroma; green = secondary; }
+		else if (hueSection < 2) { red = secondary; green = chroma; }
+		else if (hueSection < 3) { green = chroma; blue = secondary; }
+		else if (hueSection < 4) { green = secondary; blue = chroma; }
+		else if (hueSection < 5) { red = secondary; blue = chroma; }
+		else { red = chroma; blue = secondary; }
+		var match = lightness - chroma / 2;
+		categoryColorCache[category] = [
+			Math.round((red + match) * 255),
+			Math.round((green + match) * 255),
+			Math.round((blue + match) * 255),
+			255,
+		];
+		return categoryColorCache[category];
+	};
+	var getCategoryValue = function (value) {
+		if (angular.isObject(value))
+		{
+			if (value._value !== undefined)
+				value = value._value;
+			else if (value.value !== undefined)
+				value = value.value;
+			else
+				return '';
+		}
+		if (value === null || value === undefined)
+			return '';
+		return String(value).trim();
+	};
+	var getCategoryLabel = function (value) {
+		return value.replace(/_/g, ' ');
+	};
+	var renderCategoryView = function (dataNode, viewName) {
+		$scope.valueLegend = null;
+		mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
+		var provinceKey = {
+			religion: 'religion',
+			government: 'government',
+			culture: 'culture',
+			tradeGoods: 'trade_goods',
+		}[viewName];
+		var countryKey = viewName == 'government' ? 'government'
+			: viewName == 'religion' ? 'religion' : null;
+		var definitionNodes = {
+			religion: modService.data.common && modService.data.common.religions,
+			government: modService.data.common && modService.data.common.governments,
+			tradeGoods: modService.data.common && modService.data.common.tradegoods,
+		};
+		var definitionNode = definitionNodes[viewName];
+		var usesDefinitionColors = viewName != 'culture';
+
+		return $q.all({
+			provinces: modService.getData(modService.data.history.provinces),
+			definitions: definitionNode ? modService.getData(definitionNode) : $q.when(null),
+		}).then(function (loaded) {
+			var provinces = loaded.provinces;
+			var definitionColors = usesDefinitionColors
+				? loaded.definitions && loaded.definitions.colorByName || {}
+				: null;
+			var ownerTags = [];
+			if (countryKey)
+			{
+				angular.forEach(provinces.byId, function (province) {
+					var owner = getProvinceState(province).owner;
+					if (owner && ownerTags.indexOf(owner) == -1)
+						ownerTags.push(owner);
+				});
+			}
+			return getCountryHistoryByTag(ownerTags).then(function (countryHistory) {
+				var provincesByCategory = {};
+				angular.forEach(provinces.byId, function (province) {
+					var data = getProvinceState(province);
+					var owner = getCategoryValue(data.owner);
+					var category = provinceKey ? getCategoryValue(data[provinceKey]) : '';
+					var country = owner && (countryHistory[owner] || countryHistory[owner.toUpperCase()]);
+
+					if (!category && countryKey && country)
+					{
+						category = getCategoryValue(country[countryKey]);
+						if (!category && viewName == 'government')
+							category = getCategoryValue(country.government_reform || country.government_type);
+					}
+					if (!category)
+						category = owner ? 'Unknown' : 'Unowned';
+
+					if (!provincesByCategory[category])
+						provincesByCategory[category] = [];
+					provincesByCategory[category].push(province);
+				});
+
+				var categories = Object.keys(provincesByCategory).sort(function (a, b) {
+					return a.localeCompare(b);
+				});
+				var fills = [];
+				var legend = [];
+				angular.forEach(categories, function (category) {
+					var color = getCategoryColor(category, definitionColors);
+					fills.push(mapDrawService.fillProvinces(
+						$scope.mapCanvas,
+						provincesByCategory[category],
+						color,
+						true
+					));
+					legend.push({
+						label: getCategoryLabel(category),
+						color: 'rgb('+ color[0] +', '+ color[1] +', '+ color[2] +')',
+					});
+				});
+				$scope.valueLegend = {
+					label: $scope.viewLabels[viewName],
+					categories: legend,
+				};
+
+				return $q.all(fills).then(function () {
+					var defaultData = dataNode.default && dataNode.default.data || {};
+					var waterProvinces = getWaterProvinces(defaultData, provinces);
+					var waterFills = [];
+					if (defaultData.major_rivers)
+						waterFills.push(mapDrawService.fillProvinces($scope.mapCanvas, defaultData.major_rivers, [6, 115, 249, 255], true));
+					if (waterProvinces.length)
+						waterFills.push(mapDrawService.fillProvinces($scope.mapCanvas, waterProvinces, [68, 107, 163, 255], true));
+					return $q.all(waterFills);
+				});
+			});
+		}).then(function () {
+			return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
+				$scope.loading = false;
+			});
+		});
+	};
+	var renderEmptyView = function (dataNode) {
+		$scope.valueLegend = null;
+		mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
+		return modService.getData(modService.data.history.provinces).then(function (provinces) {
+			var allProvinces = [];
+			angular.forEach(provinces.byId, function (province) {
+				if (province)
+					allProvinces.push(province);
+			});
+			return mapDrawService.fillProvinces(
+				$scope.mapCanvas,
+				allProvinces,
+				[128, 128, 128, 255],
+				true
+			).then(function () {
+				var defaultData = dataNode.default && dataNode.default.data || {};
+				var waterProvinces = getWaterProvinces(defaultData, provinces);
+				if (!waterProvinces.length)
+					return;
+				return mapDrawService.fillProvinces(
+					$scope.mapCanvas,
+					waterProvinces,
+					[68, 107, 163, 255],
+					true
+				);
+			});
+		}).then(function () {
+			return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
+				$scope.loading = false;
+			});
+		});
+	};
+	var renderProvinceTerrainView = function (environment) {
+		$scope.valueLegend = null;
+		mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
+		return loadProvinceTerrain(environment).then(function (state) {
+			if (!state)
+				return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
+					$scope.loading = false;
+				});
+			var provincesByColor = {};
+			var colorsByKey = {};
+			angular.forEach(modService.data.history.provinces.byId, function (province) {
+				if (!province._terrain)
+					return;
+				var key = province._terrain.color.join(',');
+				if (!provincesByColor[key])
+				{
+					provincesByColor[key] = [];
+					colorsByKey[key] = province._terrain.color.concat([255]);
+				}
+				provincesByColor[key].push(province);
+			});
+			var fills = [];
+			angular.forEach(provincesByColor, function (group, key) {
+				fills.push(mapDrawService.fillProvinces($scope.mapCanvas, group, colorsByKey[key], true));
+			});
+			return $q.all(fills).then(function () {
+				return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
+					$scope.loading = false;
+				});
+			});
+		});
+	};
+	var renderEnvironmentView = function (dataNode, viewName) {
+		var palette = environmentViewPalettes[viewName];
+		mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
+
+		var defaultData = dataNode.default && dataNode.default.data || {};
+		return modService.getData(modService.data.history.provinces).then(function (provinces) {
+			var provincesByCategory = {};
+			angular.forEach(provinces.byId, function (province) {
+				var classification = province[palette.key];
+				var category = classification && classification._value;
+				if (!palette.colors[category])
+					category = palette.defaultCategory;
+				if (!provincesByCategory[category])
+					provincesByCategory[category] = [];
+				provincesByCategory[category].push(province);
+			});
+
+			var fills = [];
+			angular.forEach(palette.colors, function (color, category) {
+				if (provincesByCategory[category] && provincesByCategory[category].length)
+					fills.push(mapDrawService.fillProvinces($scope.mapCanvas, provincesByCategory[category], color, true));
+			});
+			return $q.all(fills);
+		}).then(function () {
+			var waterProvinces = getWaterProvinces(defaultData, modService.data.history.provinces);
+			var waterFills = [];
+			if (defaultData.major_rivers)
+				waterFills.push(mapDrawService.fillProvinces($scope.mapCanvas, defaultData.major_rivers, [6, 115, 249, 255], true));
+			if (waterProvinces.length)
+				waterFills.push(mapDrawService.fillProvinces($scope.mapCanvas, waterProvinces, [68, 107, 163, 255], true));
+			return $q.all(waterFills);
+		}).then(function () {
+			return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
+				$scope.loading = false;
+			});
+		});
+	};
 
 	$scope.$watch('view', function(newValue, oldValue) {
 		$scope.loading = true;
+		$scope.valueLegend = null;
 		$scope.hoverCanvas = document.getElementById('PanZoomCanvasHover');
 		$scope.selectCanvas = document.getElementById('PanZoomCanvasSelect');
 		$scope.mapCanvas = document.getElementById('PanZoomCanvas');
 
-		modService.getData(modService.data.map.environment).then(function (environment) {
-			if (environment.default.data.width)
+		var environmentFiles = [];
+		if (newValue == 'countries' || newValue == 'countryReligion' || newValue == 'baseTax'
+			|| newValue == 'baseManpower' || newValue == 'baseProduction'
+			|| newValue == 'religion' || newValue == 'government' || newValue == 'culture'
+			|| newValue == 'tradeGoods' || newValue == 'development' || newValue == 'empty')
+			environmentFiles = ['default'];
+		else if (newValue == 'climate' || newValue == 'weather' || newValue == 'monsoons')
+			environmentFiles = ['default', 'climate'];
+		else if (newValue == 'provinceTerrain')
+			environmentFiles = ['default', 'terrain'];
+
+		modService.loadMapEnvironment(environmentFiles).then(function (environment) {
+			if (environment.default && environment.default.data.width)
 			{
 				$scope.mapWidth = environment.default.data.width;
 				$scope.mapHeight = environment.default.data.height;
@@ -986,38 +2114,30 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 					return modService.getImage(data);
 				}).then(function (image) {
 					$scope.scrollImage = image.src;
-
-					if ($scope.mapWidth != image.width)
-					{
-						$scope.mapWidth = image.width;
-						$scope.mapHeight = image.height;
-						mapDrawService.clearCanvasCache($scope.mapCanvas);
-					}
-					mapDrawService.clearCanvas($scope.mapCanvas);
-					mapDrawService.drawCanvas($scope.mapCanvas);
-
-
-					$scope.loading = false;
-				}, modService.errorCallback);
+					$scope.mapWidth = image.width;
+					$scope.mapHeight = image.height;
+					return syncMapCanvasDimensions(image).then(function () {
+						mapDrawService.clearCanvas($scope.mapCanvas);
+						mapDrawService.drawCanvas($scope.mapCanvas);
+						$scope.loading = false;
+					});
+				}).then(null, handleMapError);
 			}
+			else if (newValue == 'empty')
+				renderEmptyView(environment).then(null, handleMapError);
 			else if (newValue == 'seas')
 			{
-				mapDrawService.clearCanvas($scope.mapCanvas);
 				modService.getData(modService.data.map.seas.image).then(function (data) {
 					return modService.getImage(data);
 				}).then(function (image) {
 					$scope.scrollImage = image.src;
-
-					if ($scope.mapWidth != image.width)
-					{
-						$scope.mapWidth = image.width;
-						$scope.mapHeight = image.height;
-						mapDrawService.clearCanvasCache($scope.mapCanvas);
-					}
-					mapDrawService.clearCanvas($scope.mapCanvas);
-
-					$scope.loading = false;
-				}, modService.errorCallback);
+					$scope.mapWidth = image.width;
+					$scope.mapHeight = image.height;
+					return syncMapCanvasDimensions(image).then(function () {
+						mapDrawService.clearCanvas($scope.mapCanvas);
+						$scope.loading = false;
+					});
+				}).then(null, handleMapError);
 			}
 			else if (newValue == 'countries')
 			{
@@ -1056,7 +2176,7 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 							});
 						});
 					});
-				}, modService.errorCallback);
+				}, handleMapError);
 			}
 			else if (newValue == 'countryReligion')
 			{
@@ -1095,174 +2215,23 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 							});
 						});
 					});
-				}, modService.errorCallback);
+				}, handleMapError);
 			}
 			else if (newValue == 'baseTax')
-			{
-				var baseTaxColors = [
-					'#7A0063',
-					'#6A0183',
-					'#3E038D',
-					'#0D0596',
-					'#0839A0',
-					'#0A7AA9',
-					'#0DB2A5',
-					'#11BC6E',
-					'#14C632',
-					'#3ECF18',
-					'#8AD91B',
-					'#DAE220',
-					'#ECA824',
-					'#F56329',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-				];
-
-				modService.getData(modService.data.map.environment).then(function (dataNode) {
-					mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
-					// CK2
-					if (dataNode.default.data.sea_zones)
-					{
-						for (var i; i < dataNode.default.data.sea_zones.length; i++)
-							mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.sea_zones[i], [51, 157, 255, 255], true);
-					}
-					if (dataNode.default.data.major_rivers)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.major_rivers, [6, 115, 249, 255], true);
-					// EU4
-					if (dataNode.default.data.sea_starts)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.sea_starts, [51, 157, 255, 255], true);
-					if (dataNode.default.data.lakes)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.lakes, [6, 115, 249, 255], true);
-
-					//mapDrawService.fillProvinces($scope.mapCanvas, []);
-				}).then(function () {
-					return modService.getData(modService.data.countries.tags).then(function (countryTags) {
-						return modService.getData(modService.data.history.provinces).then(function (provinces) {
-							return modService.getData(modService.data.countries.info).then(function (countries) {
-
-								angular.forEach(provinces.byId, function (province) {
-									if (province.data.data.base_tax)
-									{
-										mapDrawService.fillProvinces($scope.mapCanvas, [province], baseTaxColors[province.data.data.base_tax], true);
-									}
-								})
-
-								return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
-									$scope.loading = false;
-								});
-							});
-						});
-					});
-				}, modService.errorCallback);
-			}
-			else if (newValue == 'manpower')
-			{
-				var baseTaxColors = [
-					'#7A0063',
-					'#6A0183',
-					'#3E038D',
-					'#0D0596',
-					'#0839A0',
-					'#0A7AA9',
-					'#0DB2A5',
-					'#11BC6E',
-					'#14C632',
-					'#3ECF18',
-					'#8AD91B',
-					'#DAE220',
-					'#ECA824',
-					'#F56329',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-					'#FF2E41',
-				];
-
-				modService.getData(modService.data.map.environment).then(function (dataNode) {
-					mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
-					// CK2
-					if (dataNode.default.data.sea_zones)
-					{
-						for (var i; i < dataNode.default.data.sea_zones.length; i++)
-							mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.sea_zones[i], [51, 157, 255, 255], true);
-					}
-					if (dataNode.default.data.major_rivers)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.major_rivers, [6, 115, 249, 255], true);
-					// EU4
-					if (dataNode.default.data.sea_starts)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.sea_starts, [51, 157, 255, 255], true);
-					if (dataNode.default.data.lakes)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.lakes, [6, 115, 249, 255], true);
-
-					//mapDrawService.fillProvinces($scope.mapCanvas, []);
-				}).then(function () {
-					return modService.getData(modService.data.countries.tags).then(function (countryTags) {
-						return modService.getData(modService.data.history.provinces).then(function (provinces) {
-							return modService.getData(modService.data.countries.info).then(function (countries) {
-
-								angular.forEach(provinces.byId, function (province) {
-									if (province.data.data.manpower)
-									{
-										mapDrawService.fillProvinces($scope.mapCanvas, [province], baseTaxColors[province.data.data.manpower], true);
-									}
-								})
-
-								return mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
-									$scope.loading = false;
-								});
-							});
-						});
-					});
-				}, modService.errorCallback);
-			}
-			else if (newValue == 'climate')
-			{
-				modService.getData(modService.data.map.environment).then(function (dataNode) {
-					mapDrawService.colorCanvas($scope.mapCanvas, [200, 200, 200, 255]);
-					// CK2
-					if (dataNode.default.data.sea_zones)
-					{
-						for (var i; i < dataNode.default.data.sea_zones.length; i++)
-							mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.sea_zones[i], [51, 157, 255, 255], true);
-					}
-					if (dataNode.default.data.major_rivers)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.major_rivers, [6, 115, 249, 255], true);
-					// EU4
-					if (dataNode.default.data.sea_starts)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.sea_starts, [51, 157, 255, 255], true);
-					if (dataNode.default.data.lakes)
-						mapDrawService.fillProvinces($scope.mapCanvas, dataNode.default.data.lakes, [6, 115, 249, 255], true);
-
-					var climateToColor = {
-						'tropical': [43, 251, 2, 255],
-						'arid': [251, 242, 2, 255],
-						'arctic': [255, 255, 255, 255],
-						'severe_winter': [200, 162, 149, 255],
-						'normal_winter': [148, 169, 115, 255],
-						'mild_winter': [132, 189, 42, 255],
-						'impassable': [100, 100, 100, 255],
-					}
-					for (var i = 0; i < dataNode.climate.subNodes.length; i++)
-					{
-						var climate = dataNode.climate.subNodes[i];
-						if (climateToColor[climate.name])
-							mapDrawService.fillProvinces($scope.mapCanvas, climate.data, climateToColor[climate.name], true);
-						else
-							console.log(climate.name)
-					}
-
-					mapDrawService.fillProvinces($scope.mapCanvas, []).then(function () {
-						$scope.loading = false;
-					});
-
-				}, modService.errorCallback);
-			}
+				renderProvinceValueView(environment, 'base_tax', 'Base Tax').then(null, handleMapError);
+			else if (newValue == 'baseManpower')
+				renderProvinceValueView(environment, 'base_manpower', 'Base Manpower').then(null, handleMapError);
+			else if (newValue == 'baseProduction')
+				renderProvinceValueView(environment, 'base_production', 'Base Production').then(null, handleMapError);
+			else if (newValue == 'development')
+				renderProvinceValueView(environment, 'development', 'Development').then(null, handleMapError);
+			else if (newValue == 'religion' || newValue == 'government'
+				|| newValue == 'culture' || newValue == 'tradeGoods')
+				renderCategoryView(environment, newValue).then(null, handleMapError);
+			else if (newValue == 'climate' || newValue == 'weather' || newValue == 'monsoons')
+				renderEnvironmentView(environment, newValue).then(null, handleMapError);
+			else if (newValue == 'provinceTerrain')
+				renderProvinceTerrainView(environment).then(null, handleMapError);
 
 			if ($scope.options.highLight)
 			{
@@ -1271,11 +2240,45 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 
 				modService.getData(modService.data.map.provinceMapping).then(function (dataNode) {
 					$scope.areaByProvinceId = dataNode.areaByProvinceId;
-				}, modService.errorCallback);
+				}, handleMapError);
 			}
-		}, modService.errorCallback);
+		}, handleMapError);
 	});
+
+	$scope.loadEnvironmentData = function () {
+		$scope.loading = true;
+		return modService.loadMapEnvironment(['default', 'climate', 'continent', 'region', 'area', 'terrain']).then(function (environment) {
+			return loadProvinceTerrain(environment).then(function (terrainState) {
+				$scope.regionOptions = [{value: '', label: 'No region'}];
+				angular.forEach(environment.region && environment.region.subNodes || [], function (region) {
+					$scope.regionOptions.push({value: region.name, label: region.name.replace(/_/g, ' ')});
+				});
+				$scope.environmentDataAvailable = {
+					_continent: !!environment.continent,
+					_climate: !!environment.climate,
+					_winter: !!environment.climate,
+					_monsoon: !!environment.climate,
+					_isSeaStart: !!(environment.default && environment.default.data.sea_starts),
+					_isLake: !!(environment.default && environment.default.data.lakes),
+					_isForcedCoastal: !!(environment.default && environment.default.data.force_coastal),
+					_regions: !!(environment.region && environment.area),
+					_terrain: !!(terrainState && terrainState.available),
+				};
+				return $scope.refreshSelection().then(function () {
+					$scope.loading = false;
+				});
+			});
+		}).then(null, handleMapError);
+	};
+	$scope.$watch('dataViewLeft.type', function (type) {
+		if (type == 'multiEnvironment')
+			$scope.loadEnvironmentData();
+	});
+
+	var gridImageRequest = 0;
 	$scope.$watch('[options.showGrid, view]', function(newValue, oldValue) {
+		var request = ++gridImageRequest;
+		var requestedView = $scope.view;
 		if ($scope.options.showGrid)
 		{
 			var source = modService.data.map.provinces.grid;
@@ -1286,25 +2289,25 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 			modService.getData(source).then(function (data) {
 				return modService.getImage(data);
 			}).then(function (image) {
+				if (request != gridImageRequest || !$scope.options.showGrid || $scope.view != requestedView)
+					return;
 				$scope.gridImage = image.src;
-
-				if ($scope.mapWidth != image.width)
-				{
-					$scope.mapWidth = image.width;
-					$scope.mapHeight = image.height;
-					mapDrawService.clearCanvasCache($scope.mapCanvas);
-				}
-
 				$scope.loading = false;
 
-			}, modService.errorCallback);
+			}, function (error) {
+				if (request == gridImageRequest)
+					handleMapError(error);
+			});
 		}
 		else
 		{
 			$scope.gridImage = null;
 		}
 	});
+	var highlightDataRequest = 0;
 	$scope.$watch('[options.highLight, view]', function(newValue, oldValue) {
+		var request = ++highlightDataRequest;
+		var requestedView = $scope.view;
 		if ($scope.options.highLight)
 		{
 			var source = modService.data.map.provinces.info;
@@ -1313,9 +2316,14 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 
 			$scope.loading = true;
 			modService.getData(source).then(function (dataNode) {
+				if (request != highlightDataRequest || !$scope.options.highLight || $scope.view != requestedView)
+					return;
 				$scope.analytics = dataNode.analytics;
 				$scope.loading = false;
-			}, modService.errorCallback);
+			}, function (error) {
+				if (request == highlightDataRequest)
+					handleMapError(error);
+			});
 		}
 		else
 		{
@@ -1323,100 +2331,288 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 		}
 	});
 
-	$scope.inverseMapCssScale = function (zoomLevel) {
-		return (1 / Math.pow(2, zoomLevel - 5))*1.5;
+	var labelViewRequest = 0;
+	var getOptionalLabelData = function (path, dataNode) {
+		return modService.getFileEntry(path, null, true, true).then(function (entry) {
+			if (!entry)
+			{
+				console.info('[map-analysis] Missing optional label data: '+ path);
+				return null;
+			}
+			return modService.getData(dataNode);
+		});
+	};
+	var getCountryHistoryByTag = function (tags) {
+		if (!tags.length)
+			return $q.when({});
+
+		return modService.getFileEntry('history/countries', null, true, true).then(function (entry) {
+			if (!entry)
+			{
+				console.info('[map-analysis] Missing optional label data: history/countries');
+				return {};
+			}
+
+			return modService.getFileNodeByPath('history/countries').then(function (directory) {
+				return modService.loadFileNodeDirectory(directory);
+			}).then(function (directory) {
+				var pathsByTag = {};
+				angular.forEach(directory.files, function (file) {
+					var match = /^([A-Z0-9]{3})(?:\s|\.|$)/i.exec(file.name);
+					if (match && !pathsByTag[match[1].toUpperCase()])
+						pathsByTag[match[1].toUpperCase()] = file.path;
+				});
+
+				var promisesByTag = {};
+				angular.forEach(tags, function (tag) {
+					var path = pathsByTag[tag.toUpperCase()];
+					if (path)
+					{
+						promisesByTag[tag] = modService.getPdxScriptDataByPath(path).then(function (node) {
+							return node.data && node.data.data || {};
+						});
+					}
+				});
+				return $q.all(promisesByTag);
+			});
+		});
+	};
+	var getLocalizedLabel = function (localisation, key) {
+		var english = localisation && localisation.byLanguage
+			&& localisation.byLanguage.l_english;
+		var value = english && english[key];
+		return value ? (value._text || value.toString()) : '';
 	};
 
-	$scope.$watch('labelView', function(newValue, oldValue) {
+	$scope.$watch('labelView', function (newValue) {
+		var request = ++labelViewRequest;
+		$scope.labels = [];
 		if (newValue == 'none')
-		{
-			$scope.labels = [];
-		}
-		else if (newValue == 'provinceName')
-		{
-			modService.getDataMultiple([
-				modService.data.map.areas,
-				modService.data.history.provinces,
-				modService.data.countries.tags,
-				modService.data.countries.info,
-				modService.data.localisation,
-			]).then(function () {
-				$scope.labels = [];
-				var labelWidthAvg = 12;
-				var labelHeightAvg = 8;
-				angular.forEach(modService.data.map.areas.list, function (area) {
-					if (area._province && area._province._localisation)
-					{
-						$scope.labels.push({
-							x: area.extentMin[0] + (area.extentMax[0] - area.extentMin[0])/2 - labelWidthAvg,
-							y: area.extentMin[1] + (area.extentMax[1] - area.extentMin[1])/2 - labelHeightAvg,
-							width: 0,
-							height: 0,
-							area: area,
-							text: area._province && area._province._localisation ? area._province._localisation.l_english : '',
-							message: '',
-						});
+			return;
+
+		var needsProvinceHistory = newValue != 'provinceId';
+		var needsLocalisation = newValue == 'provinceName' || newValue == 'countryName'
+			|| newValue == 'countryReligion' || newValue == 'countryGovernment';
+		var needsCountryHistory = newValue == 'countryReligion' || newValue == 'countryGovernment';
+		var dataPromises = {
+			areas: modService.getData(modService.data.map.areas),
+			provinceMapping: modService.getData(modService.data.map.provinceMapping),
+			colorMapping: modService.getData(modService.data.map.colorMapping),
+			provinces: needsProvinceHistory
+				? getOptionalLabelData('history/provinces', modService.data.history.provinces)
+				: $q.when(null),
+			localisation: needsLocalisation
+				? getOptionalLabelData('localisation', modService.data.localisation)
+				: $q.when(null),
+		};
+
+		$q.all(dataPromises).then(function (data) {
+			var mappingsByAreaColor = {};
+			angular.forEach(data.provinceMapping.areaByProvinceId, function (area, provinceId) {
+				if (area && !mappingsByAreaColor[area.colorNum])
+				{
+					mappingsByAreaColor[area.colorNum] = {
+						id: String(provinceId),
+						mapping: data.colorMapping.byId[provinceId]
 					};
+				}
+			});
+
+			var areas = [];
+			var countryTags = [];
+			angular.forEach(data.areas.list, function (area) {
+				var colorMapping = data.colorMapping.byColor[area.colorNum];
+				var fallbackMapping = mappingsByAreaColor[area.colorNum];
+				var mapping = colorMapping || fallbackMapping && fallbackMapping.mapping;
+				var provinceId = mapping ? String(mapping.id) : fallbackMapping && fallbackMapping.id;
+				var province = provinceId && data.provinces && data.provinces.byId[provinceId];
+				var owner = getProvinceState(province).owner;
+
+				if (owner && countryTags.indexOf(owner) == -1)
+					countryTags.push(owner);
+				areas.push({
+					area: area,
+					provinceId: provinceId,
+					mapping: mapping,
+					province: province,
+					owner: owner
 				});
-			}, modService.errorCallback);
-		}
+			});
+
+			var countryHistoryPromise = needsCountryHistory
+				? getCountryHistoryByTag(countryTags)
+				: $q.when({});
+			return countryHistoryPromise.then(function (countryHistory) {
+				if (request != labelViewRequest || newValue != $scope.labelView)
+					return;
+
+				var labels = [];
+				angular.forEach(areas, function (entry) {
+					var area = entry.area;
+					var provinceId = entry.provinceId;
+					var text = '';
+					var ownerLabel = entry.owner || (entry.province ? 'Unowned' : 'Owner unavailable');
+
+					if (newValue == 'provinceName')
+					{
+						text = getLocalizedLabel(data.localisation, 'PROV'+ provinceId)
+							|| entry.mapping && entry.mapping.name
+							|| (provinceId ? 'Province '+ provinceId : '');
+					}
+					else if (newValue == 'provinceId')
+						text = provinceId || 'Unmapped province (RGB '+ area.r +', '+ area.g +', '+ area.b +')';
+					else if (newValue == 'countryTag')
+						text = ownerLabel;
+					else if (newValue == 'countryName')
+						text = entry.owner
+							? getLocalizedLabel(data.localisation, entry.owner) || entry.owner
+							: ownerLabel;
+					else if (newValue == 'countryReligion' || newValue == 'countryGovernment')
+					{
+						var attribute = newValue == 'countryReligion' ? 'religion' : 'government';
+						var country = entry.owner && countryHistory[entry.owner];
+						var value = country && country[attribute];
+						text = value
+							? getLocalizedLabel(data.localisation, value) || String(value)
+							: entry.owner ? entry.owner +' ('+ attribute +' unavailable)' : ownerLabel;
+					}
+
+					if (!text)
+						text = 'Unmapped province (RGB '+ area.r +', '+ area.g +', '+ area.b +')';
+
+					labels.push({
+						x: area.center[0],
+						y: area.center[1],
+						width: 0,
+						height: 0,
+						area: area,
+						text: text,
+						message: provinceId ? 'Province ID: '+ provinceId : 'No province ID mapping available.'
+					});
+				});
+				$scope.labels = labels;
+			});
+		}).then(null, function (error) {
+			if (request == labelViewRequest)
+				handleMapError(error);
+		});
 	});
 
 	$scope.loadSeasMap = function () {
-		$scope.loading = true;
-		$scope.output = '';
-		$scope.messages = '';
-		$scope.outputTitle = 'default.map - sea_starts()';
+		var renderSeaResults = function (seaEntries, showSeaMap, priorMessages, priorLabels) {
+			$scope.output = '';
+			$scope.messages = priorMessages || '';
+			$scope.outputTitle = 'default.map - sea_starts()';
+			$scope.labels = priorLabels || [];
+			$scope.view = showSeaMap ? 'seas' : 'provinces';
+			$scope.options.showLabels = true;
 
-		$scope.labels = [];
+			var seaIds = [];
+			angular.forEach(seaEntries, function (entry) {
+				var id = parseInt(entry.mapping.id);
+				if (isNaN(id))
+					return;
 
-		$scope.view = 'seas';
-		$scope.options.showLabels = true;
-
-		$scope.loading = true;
-		modService.getData(modService.data.map.seas.info).then(function (seasInfo) {
-			return modService.getData(modService.data.map.colorMapping).then(function (mappings) {
-				var seas = [];
-				// Iterate over current mapping
-				for (var colorNum in seasInfo.analytics.colors)
-				{
-					if (seasInfo.analytics.colors.hasOwnProperty(colorNum))
-					{
-						var c = seasInfo.analytics.colors[colorNum];
-
-						if (!mappings.byColor[colorNum])
-						{
-							var errMessage = 'Sea nr '+ c.quadNr +' not found in definition.csv.'+"\n";
-
-							var color = c;
-							$scope.labels.push({text: color.quadNr, x: color.center[0], y: color.center[1], extentMin: color.extentMin, extentSize: color.extentSize, message: errMessage });
-
-							$scope.messages += errMessage;
-						}
-						else
-						{
-							$scope.labels.push({text: mappings.byColor[colorNum].id, x: mappings.byColor[colorNum].center[0], y: mappings.byColor[colorNum].center[1], extentMin: mappings.byColor[colorNum].center, extentSize: [0, 0]});
-
-							seas.push(parseInt(mappings.byColor[colorNum].id));
-						}
-					}
-				}
-
-				seas.sort(function (a, b) { return a - b; });
-
-				for (var i = 0; i < seas.length; i++)
-				{
-
-					$scope.output += seas[i] +' ';
-					if (i % 20 == 0 && i > 0)
-						$scope.output += "\n";
-				}
-
-				$scope.messages += seas.length +' seas matched.'+"\n";
-
-				$scope.loading = false;
+				var area = entry.area;
+				var center = entry.mapping.center || area.center;
+				$scope.labels.push({
+					text: entry.mapping.id,
+					x: center[0],
+					y: center[1],
+					extentMin: area.extentMin,
+					extentSize: area.extentSize,
+					area: area
+				});
+				seaIds.push(id);
 			});
-		}, modService.errorCallback);
+
+			seaIds.sort(function (a, b) { return a - b; });
+			for (var i = 0; i < seaIds.length; i++)
+			{
+				$scope.output += seaIds[i] +' ';
+				if (i % 20 == 0 && i > 0)
+					$scope.output += "\n";
+			}
+
+			$scope.messages += seaIds.length +' seas matched.'+"\n";
+			$scope.loading = false;
+		};
+
+		$scope.loading = true;
+		return modService.getFileEntry('map/seas.png', null, true).then(function (entry) {
+			if (entry)
+			{
+				$scope.hasSeasPng = true;
+				return modService.traceMapAnalysis('Analyze seas.png', function () {
+					return $q.all({
+						info: modService.getData(modService.data.map.seas.info),
+						mappings: modService.getData(modService.data.map.colorMapping),
+					}).then(function (data) {
+						var seaEntries = [];
+						var missingEntries = [];
+						var missingMessages = '';
+						for (var colorNum in data.info.analytics.colors)
+						{
+							if (!data.info.analytics.colors.hasOwnProperty(colorNum))
+								continue;
+
+							var area = data.info.analytics.colors[colorNum];
+							var mapping = data.mappings.byColor[colorNum];
+							if (!mapping)
+							{
+								var errorMessage = 'Sea nr '+ area.quadNr +' not found in definition.csv.'+"\n";
+								missingMessages += errorMessage;
+								missingEntries.push({
+									text: area.quadNr,
+									x: area.center[0],
+									y: area.center[1],
+									extentMin: area.extentMin,
+									extentSize: area.extentSize,
+									message: errorMessage,
+									area: area
+								});
+								continue;
+							}
+							seaEntries.push({area: area, mapping: mapping});
+						}
+
+						renderSeaResults(seaEntries, true, missingMessages, missingEntries);
+					});
+				}).then(null, handleMapError);
+			}
+
+			console.info('[map-analysis] Missing optional file: map/seas.png; deriving sea provinces from map/default.map.');
+			$scope.hasSeasPng = false;
+			$scope.view = 'provinces';
+			return modService.loadMapEnvironment(['default']).then(function (environment) {
+				var seaStarts = environment.default && environment.default.data.sea_starts;
+				if (!seaStarts || !seaStarts.length)
+				{
+					$scope.output = '';
+					$scope.labels = [];
+					$scope.outputTitle = 'Sea analysis unavailable';
+					$scope.messages = 'Sea provinces could not be inferred: add map/seas.png or define sea_starts in map/default.map.';
+					$scope.loading = false;
+					return;
+				}
+
+				return $q.all({
+					provinceMapping: modService.getData(modService.data.map.provinceMapping),
+					colorMapping: modService.getData(modService.data.map.colorMapping),
+				}).then(function (data) {
+					var seaEntries = [];
+					angular.forEach(seaStarts, function (provinceId) {
+						var id = parseInt(provinceId);
+						var mapping = data.colorMapping.byId[id];
+						var area = data.provinceMapping.areaByProvinceId[id];
+						if (mapping && area)
+							seaEntries.push({area: area, mapping: mapping});
+					});
+
+					renderSeaResults(seaEntries, false);
+				});
+			}).then(null, handleMapError);
+		}, handleMapError);
 	};
 
 	$scope.loadNumberedMap = function () {
@@ -1433,25 +2629,52 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 		$scope.dataViewLeft.type = 'output';
 		$scope.options.showLabels = true;
 
-		modService.getData(modService.data.map.provinces.info).then(function (info) {
-			var defs = 'province;red;green;blue;x;x' + "\n";
-			$scope.labels = [];
+		return modService.traceMapAnalysis('Analyze provinces.bmp', function () {
+			return $q.all({
+				info: modService.getData(modService.data.map.provinces.info),
+				colorMapping: modService.getData(modService.data.map.colorMapping),
+				provinceMapping: modService.getData(modService.data.map.provinceMapping),
+			}).then(function (data) {
+				var defs = 'province;red;green;blue;x;x' + "\n";
+				$scope.labels = [];
+				var mappingByAreaColor = {};
+				angular.forEach(data.provinceMapping.areaByProvinceId, function (area, provinceId) {
+					var mapping = data.colorMapping.byId[provinceId];
+					if (area && mapping)
+						mappingByAreaColor[area.colorNum] = mapping;
+				});
 
-			var firstArea;
-			angular.forEach(info.analytics.quadNrs, function (color) {
-				if (!color)
-					return;
+				var firstArea;
+				angular.forEach(data.info.analytics.quadNrs, function (color) {
+					if (!color)
+						return;
 
-				firstArea = color;
+					firstArea = color;
 
-				$scope.labels.push({text: color.quadNr, x: color.center[0], y: color.center[1], extentMin: color.extentMin, extentSize: color.extentSize});
+					var mapping = data.colorMapping.byColor[color.colorNum] || mappingByAreaColor[color.colorNum];
+					var labelText = mapping && mapping.name
+						? mapping.name
+						: mapping ? 'Province '+ mapping.id : 'Unmapped province (RGB '+ color.r +', '+ color.g +', '+ color.b +')';
+					var labelMessage = mapping
+						? 'Province ID: '+ mapping.id
+						: 'No matching row in map/definition.csv.';
+					$scope.labels.push({
+						text: labelText,
+						x: color.center[0],
+						y: color.center[1],
+						extentMin: color.extentMin,
+						extentSize: color.extentSize,
+						area: color,
+						message: labelMessage
+					});
 
-				defs += color.quadNr +';'+ color.r +';'+ color.g +';'+ color.b +';?;'+ color.center[0] + ',' + color.center[1] +"\n";
+					defs += color.quadNr +';'+ color.r +';'+ color.g +';'+ color.b +';?;'+ color.center[0] + ',' + color.center[1] +"\n";
+				});
+				$scope.output = defs;
+
+				$scope.loading = false;
 			});
-			$scope.output = defs;
-
-			$scope.loading = false;
-		}, modService.errorCallback);
+		}).then(null, handleMapError);
 	};
 
 	$scope.startDown = null;
@@ -1471,8 +2694,16 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 		}
 		if ($scope.analytics && $scope.options.selectArea && event.button == 0)
 		{
+			var coordinates = getMapCoordinates(event);
+			if (!coordinates)
+				return;
 			return modService.getData(modService.data.map.provinceMapping).then(function (dataNode) {
-				var area = mapDrawService.getAreaFromCoords($scope.analytics, event.offsetX, event.offsetY);
+				var area = mapDrawService.getAreaFromCoords($scope.analytics, coordinates.x, coordinates.y);
+				if (!area)
+					return;
+				var provinceId = dataNode.areaByProvinceId.indexOf(area);
+				if (provinceId <= 0)
+					return;
 
 				if (!event.ctrlKey)
 				{
@@ -1489,7 +2720,6 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 				else
 					$scope.selectedAreas.push(area);
 
-				var provinceId = dataNode.areaByProvinceId.indexOf(area);
 				var index = $scope.selectedProvinces.indexOf(provinceId);
 				if (index != -1)
 				{
@@ -1502,137 +2732,208 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 					mapDrawService[$scope.selectEffect]($scope.selectCanvas, provinceId, [128, 0, 0, 256]);
 				}
 
-				$scope.refreshSelection();
-			}, modService.errorCallback);
+				return $scope.refreshSelection();
+			}, handleMapError);
 		}
 	};
 
+	var refreshSelectionRequest = 0;
 	$scope.refreshSelection = function () {
-		if ($scope.selectedProvinces.length > 0)
+		var request = ++refreshSelectionRequest;
+		var selectedProvinceIds = $scope.selectedProvinces.slice();
+		$scope.dataViewLeft.multiProvinces = selectedProvinceIds;
+
+		if (!selectedProvinceIds.length)
 		{
-			$scope.dataViewLeft.multiProvinces = $scope.selectedProvinces;
+			$scope.dataViewInfo.province = null;
+			$scope.dataViewInfo.provinceName = '';
+			$scope.dataViewInfo.ownerTag = '';
+			$scope.dataViewInfo.countryName = '';
+			$scope.dataViewInfo.country = null;
+			$scope.dataViewInfo.provinceText = '';
+			$scope.dataViewLeft.multiProvince = {
+				data: {},
+				multiData: {},
+				provinces: [],
+				provinceIds: [],
+				provinceNames: [],
+				hasData: {},
+			};
+			$scope.selectedProvinceHistory = null;
+			return $q.when();
+		}
 
-			modService.getData(modService.data.history.provinces).then(function (provinces) {
-				return modService.getData(modService.data.map.provinceMapping).then(function (mapping) {
+		var selectionPromise = $q.all({
+			provinces: modService.getData(modService.data.history.provinces),
+			provinceMapping: modService.getData(modService.data.map.provinceMapping),
+			colorMapping: modService.getData(modService.data.map.colorMapping),
+			localisation: getOptionalLabelData('localisation', modService.data.localisation),
+			terrain: loadProvinceTerrain(),
+		}).then(function (data) {
+			var provinceId = selectedProvinceIds[0];
+			var province = data.provinces.byId[provinceId];
+			var ownerTag = getProvinceState(province).owner || '';
+			var countryDataPromise = ownerTag
+				? $q.all({
+					tags: getOptionalLabelData('common/country_tags', modService.data.countries.tags),
+					countries: getOptionalLabelData('common/countries', modService.data.countries.info),
+				})
+				: $q.when({tags: null, countries: null});
 
-					var provinceId = $scope.selectedProvinces[0];
-					var province = provinces.byId[provinceId];
+			var provinceTextPromise = province && !province._isFallback
+				? modService.getFileText(province.file.path)
+				: $q.when('');
 
-					$scope.dataViewInfo.province = province;
-					modService.getData(modService.data.localisation);
+			return $q.all({
+				countryData: countryDataPromise,
+				provinceText: provinceTextPromise,
+			}).then(function (loaded) {
+				if (request != refreshSelectionRequest
+					|| selectedProvinceIds.join(',') != $scope.selectedProvinces.join(','))
+					return;
 
-					if (province)
-					{
-						modService.getFileText(province.file.path).then(function (text) {
-							$scope.dataViewInfo.provinceText = text;
-						});
-					}
-					else
-					{
-						$scope.dataViewInfo.provinceText = '';
-					}
+				if (loaded.countryData.tags && loaded.countryData.countries)
+					modService.linkCountryInfo(loaded.countryData.countries);
+				if (data.localisation)
+					modService.linkLocalisation(data.localisation);
 
-					var multiProvince = {
-						data: {},
-						multiData: {},
-						provinces: [],
-						provinceIds: [],
-						provinceNames: [],
-						hasData: {},
-					};
+				var countryTag = ownerTag && loaded.countryData.tags
+					? loaded.countryData.tags.byTag[ownerTag] : null;
+				var country = countryTag && countryTag.value && loaded.countryData.countries
+					? loaded.countryData.countries.byPath['common/'+ countryTag.value] : null;
+				if (province)
+					province._country = country || null;
 
-					angular.forEach($scope.selectedProvinces, function (provinceId) {
-						var province = provinces.byId[provinceId];
-						if (province)
-						{
-							multiProvince.provinces.push(province);
-							multiProvince.provinceIds.push(provinceId);
-							if (province._localisation && province._localisation.l_english)
-								multiProvince.provinceNames.push(province._localisation.l_english);
+				var provinceMapping = data.colorMapping.byId[provinceId];
+				var englishLocalisation = data.localisation && data.localisation.byLanguage.l_english;
+				var provinceLocalisation = englishLocalisation && englishLocalisation['PROV'+ provinceId];
+				var countryLocalisation = englishLocalisation && englishLocalisation[ownerTag];
+				var countryFallbackName = country && country.file
+					? (country.file.baseName || country.file.name).replace(/^[A-Z0-9]{3}\s*-\s*/, '')
+					: ownerTag || 'Unowned';
+				$scope.dataViewInfo.province = province;
+				$scope.dataViewInfo.provinceName = provinceLocalisation
+					? provinceLocalisation._text || provinceLocalisation.toString()
+					: provinceMapping && provinceMapping.name || String(provinceId);
+				$scope.dataViewInfo.ownerTag = ownerTag;
+				$scope.dataViewInfo.countryName = countryLocalisation
+					? countryLocalisation._text || countryLocalisation.toString()
+					: countryFallbackName;
+				$scope.dataViewInfo.country = country;
+				$scope.dataViewInfo.provinceText = loaded.provinceText;
 
-							angular.forEach(province.data.data, function (value, key) {
-								if (!multiProvince.multiData[key])
-									multiProvince.multiData[key] = [];
+				var multiProvince = {
+					data: {},
+					multiData: {},
+					provinces: [],
+					provinceIds: [],
+					provinceNames: [],
+					hasData: {},
+				};
+				var environmentAvailability = {
+					_climate: $scope.environmentDataAvailable && $scope.environmentDataAvailable._climate,
+					_winter: $scope.environmentDataAvailable && $scope.environmentDataAvailable._winter,
+					_monsoon: $scope.environmentDataAvailable && $scope.environmentDataAvailable._monsoon,
+					_regions: $scope.environmentDataAvailable && $scope.environmentDataAvailable._regions,
+					_terrain: $scope.environmentDataAvailable && $scope.environmentDataAvailable._terrain,
+				};
 
-								multiProvince.multiData[key].push(value);
+				angular.forEach(selectedProvinceIds, function (selectedProvinceId) {
+					var selectedProvince = data.provinces.byId[selectedProvinceId];
+					if (!selectedProvince)
+						return;
 
-								if (multiProvince.data[key] == undefined)
-									multiProvince.data[key] = value;
-								else if (multiProvince.data[key] != value)
-									multiProvince.data[key] = null;
+					multiProvince.provinces.push(selectedProvince);
+					multiProvince.provinceIds.push(selectedProvinceId);
+					var nameLocalisation = englishLocalisation && englishLocalisation['PROV'+ selectedProvinceId];
+					var nameMapping = data.colorMapping.byId[selectedProvinceId];
+					multiProvince.provinceNames.push(nameLocalisation
+						? nameLocalisation._text || nameLocalisation.toString()
+						: nameMapping && nameMapping.name || String(selectedProvinceId));
 
-								if (multiProvince.multiData[key].length != multiProvince.provinces.length)
-									multiProvince.data[key] = null;
+					angular.forEach(getProvinceState(selectedProvince), function (value, key) {
+						if (!multiProvince.multiData[key])
+							multiProvince.multiData[key] = [];
+						multiProvince.multiData[key].push(value);
 
-								if (multiProvince.data[key] != null && multiProvince.data[key] != undefined)
-									multiProvince.hasData[key] = true;
-								else
-									multiProvince.hasData[key] = false;
-							});
-							angular.forEach(province, function (value, key) {
-								if (key[0] != '_')
-									return;
+						if (multiProvince.data[key] == undefined)
+							multiProvince.data[key] = value;
+						else if (multiProvince.data[key] != value)
+							multiProvince.data[key] = null;
 
-								if (angular.isObject(value) && !('_type' in value))
-									return;
+						if (multiProvince.multiData[key].length != multiProvince.provinces.length)
+							multiProvince.data[key] = null;
 
-								if (!multiProvince.multiData[key])
-									multiProvince.multiData[key] = [];
-
-								if (!angular.isObject(value))
-									value = null;
-								else if (value._type == 'boolean')
-									value = 1;
-								else if (value._type == 'namedSet')
-									value = value.name;
-								else if (value._type == 'multipleNamed')
-								{
-									var newValue = [];
-									for (var i = 0; i < value.length; i++)
-										newValue.push(value[i].name);
-									value = newValue.join(' ');
-								}
-
-								multiProvince.multiData[key].push(value);
-
-								if (multiProvince.data[key] === undefined)
-									multiProvince.data[key] = value;
-								else if (multiProvince.data[key] != value)
-									multiProvince.data[key] = null;
-
-								if (multiProvince.multiData[key].length != multiProvince.provinces.length)
-									multiProvince.data[key] = null;
-
-								if (multiProvince.data[key] != null && multiProvince.data[key] != undefined)
-									multiProvince.hasData[key] = true;
-								else
-									multiProvince.hasData[key] = false;
-							});
-						}
+						multiProvince.hasData[key] = multiProvince.data[key] != null
+							&& multiProvince.data[key] != undefined;
 					});
 
-					$scope.dataViewLeft.multiProvince = multiProvince;
+					angular.forEach(selectedProvince, function (value, key) {
+						if (key[0] != '_' || (angular.isObject(value) && !('_type' in value)))
+							return;
+						if (!multiProvince.multiData[key])
+							multiProvince.multiData[key] = [];
 
-					if ($scope.selectedProvinces.length > 1)
-					{
-						if ($scope.dataViewLeft.type == 'province')
-							$scope.dataViewLeft.type = 'multiProvince';
-					}
-					else
-					{
-						if ($scope.dataViewLeft.type == 'multiProvince')
-							$scope.dataViewLeft.type = 'province';
-					}
+						var displayValue = value;
+						if (angular.isObject(value))
+						{
+							if (value._type == 'boolean')
+								displayValue = 1;
+							else if (value._type == 'namedSet' || value._type == 'classification')
+								displayValue = value._value !== undefined ? value._value : value.name;
+							else if (value._type == 'multipleNamed')
+							{
+								if (key == '_regions')
+									displayValue = value.length ? value[0].name : '';
+								else
+								{
+									displayValue = [];
+									for (var i = 0; i < value.length; i++)
+										displayValue.push(value[i].name);
+									displayValue.sort();
+								}
+							}
+						}
+						multiProvince.multiData[key].push(displayValue);
+
+						if (multiProvince.data[key] === undefined)
+							multiProvince.data[key] = displayValue;
+						else if (multiProvince.data[key] != displayValue)
+							multiProvince.data[key] = null;
+
+						if (multiProvince.multiData[key].length != multiProvince.provinces.length)
+							multiProvince.data[key] = null;
+
+						if (Object.prototype.hasOwnProperty.call(environmentAvailability, key))
+							multiProvince.hasData[key] = !!environmentAvailability[key];
+						else
+							multiProvince.hasData[key] = multiProvince.data[key] != null
+								&& multiProvince.data[key] != undefined;
+					});
 				});
+
+				multiProvince.hasData._terrain = !!environmentAvailability._terrain
+					&& multiProvince.provinces.every(function (selectedProvince) {
+						return !!selectedProvince._terrain;
+					});
+				$scope.dataViewLeft.multiProvince = multiProvince;
+				if (selectedProvinceIds.length > 1)
+				{
+					if ($scope.dataViewLeft.type == 'province')
+						$scope.dataViewLeft.type = 'multiProvince';
+				}
+				else if ($scope.dataViewLeft.type == 'multiProvince')
+					$scope.dataViewLeft.type = 'province';
 			});
-		}
-		else
-		{
-			$scope.selectedProvinceHistory = null;
-		}
+		});
+		return selectionPromise.then(null, function (error) {
+			if (request == refreshSelectionRequest)
+				handleMapError(error);
+		});
 	};
 
 	$scope.hoverArea = null;
+	var hoverLookupRequest = 0;
 	$scope.toggleAreaHover = function (event) {
 		if (!$scope.analytics)
 			return;
@@ -1649,10 +2950,15 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 				return;
 		}
 
-		var currentArea = mapDrawService.getAreaFromCoords($scope.analytics, event.offsetX, event.offsetY);
+		var coordinates = getMapCoordinates(event);
+		var currentArea = coordinates
+			? mapDrawService.getAreaFromCoords($scope.analytics, coordinates.x, coordinates.y)
+			: null;
 
 		if (currentArea != $scope.hoverArea)
 		{
+			var request = ++hoverLookupRequest;
+
 			// Remove current
 			if ($scope.hoverArea)
 			{
@@ -1670,20 +2976,25 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 			else
 			{
 				$scope.hoverArea._hovered = true;
+				mapDrawService[$scope.hoverEffect]($scope.hoverCanvas, currentArea, [0, 0, 128, 256]);
+				modService.getProvinceByArea(currentArea).then(function (province) {
+					if (request != hoverLookupRequest || currentArea != $scope.hoverArea)
+						return;
+					if (province)
+						$scope.mapHint = province.file.baseName;
+					else
+						$scope.mapHint = '';
+					$scope.hoveredProvinceHistory = province;
+				});
 			}
-
-			mapDrawService[$scope.hoverEffect]($scope.hoverCanvas, $scope.hoverArea, [0, 0, 128, 256]);
-
-			modService.getProvinceByArea(currentArea).then(function (province) {
-				if (province)
-					$scope.mapHint = province.file.baseName;
-				$scope.hoveredProvinceHistory = province;
-			});
 		}
 	};
 
-	$scope.saveDataNode = function (dataNode) {
-		modService.saveData(dataNode).then(function () {
+	$scope.saveDataNode = function (dataNode, additionalSave) {
+		var savePromises = [modService.saveData(dataNode)];
+		if (additionalSave)
+			savePromises.push(additionalSave);
+		return $q.all(savePromises).then(function () {
 			if ($scope.labelView != 'none')
 			{
 				var currentView = $scope.labelView;
@@ -1700,146 +3011,220 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 					$scope.view = currentView;
 				});
 			}
-			$scope.refreshSelection();
-		}, modService.errorCallback);
+			return $scope.refreshSelection();
+		}, handleMapError);
+	};
+	$scope.saveProvinceDetails = function () {
+		var province = $scope.dataViewInfo.province;
+		if (!province)
+			return $q.when();
+		angular.forEach(province._effectiveEdits, function (isEdited, key) {
+			if (isEdited)
+				modService.setProvinceHistoryValue(province, key, getProvinceState(province)[key]);
+		});
+		return $scope.saveDataNode(province, saveProvinceTerrain([province])).then(function () {
+			province._effectiveEdits = {};
+			if (province._isFallback)
+				province._isFallback = false;
+		});
+	};
+	$scope.markProvinceHistoryFieldEdited = function (key) {
+		var province = $scope.dataViewInfo.province;
+		if (!province)
+			return;
+		if (!province._effectiveEdits)
+			province._effectiveEdits = {};
+		province._effectiveEdits[key] = true;
+	};
+	$scope.saveCountryName = function () {
+		var countryName = ($scope.dataViewInfo.countryName || '').trim();
+		var countryTag = $scope.dataViewInfo.ownerTag;
+		if (!countryTag || !countryName)
+		{
+			handleMapError(new Error('A country tag and non-empty country name are required.'));
+			return $q.when();
+		}
+
+		var localisation = modService.data.localisation;
+		var currentEntry = localisation.byLanguage.l_english && localisation.byLanguage.l_english[countryTag];
+		if (currentEntry)
+		{
+			currentEntry._text = countryName;
+			return $scope.saveDataNode(currentEntry._node);
+		}
+
+		var targetFile = null;
+		angular.forEach(localisation.byFile, function (yamlNode, path) {
+			if (!targetFile && /_l_english\.yml$/i.test(path))
+				targetFile = yamlNode;
+		});
+		if (!targetFile)
+		{
+			handleMapError(new Error('No English localization YAML file is available to save the country name.'));
+			return $q.when();
+		}
+
+		if (!targetFile.data)
+			targetFile.data = {};
+		if (!targetFile.data.l_english)
+			targetFile.data.l_english = {};
+		var localisationKey = countryTag + ':0';
+		var entry = new String(countryName);
+		entry._text = countryName;
+		entry._node = targetFile;
+		targetFile.data.l_english[localisationKey] = entry;
+		if (!localisation.byId[countryTag])
+			localisation.byId[countryTag] = {};
+		localisation.byId[countryTag].l_english = entry;
+		localisation.byId[localisationKey] = {l_english: entry};
+		if (!localisation.byLanguage.l_english)
+			localisation.byLanguage.l_english = {};
+		localisation.byLanguage.l_english[countryTag] = entry;
+		localisation.byLanguage.l_english[localisationKey] = entry;
+		if (localisation.languages.indexOf('l_english') == -1)
+			localisation.languages.push('l_english');
+		if ($scope.dataViewInfo.province && $scope.dataViewInfo.province._country
+			&& $scope.dataViewInfo.province._country._tag)
+			$scope.dataViewInfo.province._country._tag._localisation = localisation.byId[countryTag];
+
+		return $scope.saveDataNode(targetFile);
 	};
 
 	$scope.saveMultiDataNode = function (multiData) {
-		var promises = [];
 		var environmentData = modService.data.map.environment;
-		angular.forEach(multiData.provinces, function (province) {
+		var saveNodes = [];
+		var terrainProvinces = [];
+		var environmentChanged = false;
+		var addSaveNode = function (node) {
+			if (node && saveNodes.indexOf(node) == -1)
+				saveNodes.push(node);
+		};
 
-			var saveNodes = [];
-			angular.forEach(multiData.hasData, function (hasValue, key) {
-				if (hasValue)
-				{
-					if (key[0] == '_')
+		try
+		{
+			angular.forEach(multiData.provinces, function (province) {
+				angular.forEach(multiData.hasData, function (hasValue, key) {
+					if (!hasValue)
+						return;
+
+					if (key == '_climate' || key == '_winter' || key == '_monsoon')
 					{
-						if (!environmentData[key])
+						var classification = multiData.data[key];
+						if (classification === null || classification === undefined)
+							return;
+						environmentChanged = modService.setProvinceClassification(province, key, classification) || environmentChanged;
+					}
+					else if (key == '_terrain')
+					{
+						if (multiData.data[key] === null || multiData.data[key] === undefined)
+							return;
+						if (!province._terrain)
+							throw new Error('Province terrain data is unavailable for province ' + province._id + '.');
+						province._terrain._value = multiData.data[key];
+						terrainProvinces.push(province);
+					}
+					else if (key == '_regions')
+					{
+						if (multiData.data[key] === null || multiData.data[key] === undefined)
+							return;
+						var selectedRegion = multiData.data[key];
+						environmentChanged = modService.updateProvinceRegions(province, selectedRegion ? [selectedRegion] : []) || environmentChanged;
+					}
+					else if (key[0] == '_')
+					{
+						var environmentField = environmentData[key];
+						if (!environmentField)
 							return;
 
-						if (environmentData[key]._type == 'boolean')
+						if (environmentField._type == 'boolean')
 						{
-							var index = environmentData[key]._provinces.indexOf(province);
-							if (index == -1 && multiData.data[key])
+							var provinceIndex = environmentField._provinces.indexOf(province);
+							if (provinceIndex == -1 && multiData.data[key])
 							{
-								environmentData[key]._provinces.push(province);
-								province[key] = environmentData[key];
-
-								if (saveNodes.indexOf(environmentData) == -1)
-									saveNodes.push(environmentData);
+								environmentField._provinces.push(province);
+								province[key] = environmentField;
+								environmentChanged = true;
 							}
-							else if (index != -1 && !multiData.data[key])
+							else if (provinceIndex != -1 && !multiData.data[key])
 							{
-								environmentData[key]._provinces.splice(index, 1);
+								environmentField._provinces.splice(provinceIndex, 1);
 								province[key] = null;
-
-								if (saveNodes.indexOf(environmentData) == -1)
-									saveNodes.push(environmentData);
+								environmentChanged = true;
 							}
 						}
-						else if (environmentData[key]._type == 'namedSet')
+						else if (environmentField._type == 'namedSet')
 						{
-							// Remove from current
 							if (province[key])
 							{
-								var index = province[key]._provinces.indexOf(province);
-								if (index != -1)
-								{
-									province[key]._provinces.splice(index, 1);
-								}
-
-								if (saveNodes.indexOf(environmentData) == -1)
-									saveNodes.push(environmentData);
+								var oldIndex = province[key]._provinces.indexOf(province);
+								if (oldIndex != -1)
+									province[key]._provinces.splice(oldIndex, 1);
 							}
 
-							if (!multiData.data[key])
-							{
-								// Empty name = not longer in this set
-								province[key] = null;
-							}
-							else
-							{
-								var node = environmentData[key]._nodeByName[multiData.data[key]];
-
-								if (!node)
-								{
-									node = {type: 'property', name: multiData.data[key], value: []};
-									environmentData[key].data[node.name] = node.value;
-									node._provinces = [];
-									node._node = environmentData[key]._node;
-									environmentData[key]._nodeByName[node.name] = node;
-								}
-
+							var node = environmentField._nodeByName[multiData.data[key]];
+							if (node && node._provinces.indexOf(province) == -1)
 								node._provinces.push(province);
-
-								if (saveNodes.indexOf(environmentData) == -1)
-									saveNodes.push(environmentData);
-							}
+							province[key] = node || null;
+							environmentChanged = true;
 						}
-						else if (environmentData[key]._type == 'multipleNamed')
+						else if (environmentField._type == 'multipleNamed' && typeof multiData.data[key] == 'string')
 						{
 							var values = multiData.data[key].split(' ');
-
 							for (var i = 0; i < values.length; i++)
 							{
 								var operator = values[i][0];
 								var value = values[i].substr(1);
-
 								if (operator != '+' && operator != '-')
 								{
 									operator = '+';
 									value = values[i];
 								}
-
-								if (value === '')
+								if (!value)
 									continue;
 
-								var node = environmentData[key]._nodeByName[value];
-
-								if (!node)
+								var namedNode = environmentField._nodeByName[value];
+								if (!namedNode)
 								{
-									node = {type: 'property', name: value, value: []};
-									environmentData[key].data[node.name] = node.value;
-									node._provinces = [];
-									node._node = environmentData[key]._node;
-									environmentData[key]._nodeByName[node.name] = node;
+									namedNode = {type: 'property', name: value, value: []};
+									environmentField.data[namedNode.name] = namedNode.value;
+									namedNode._provinces = [];
+									namedNode._node = environmentField._node;
+									environmentField._nodeByName[namedNode.name] = namedNode;
 								}
 
-								if (operator == '+')
-								{
-									if (node._provinces.indexOf(province) == -1)
-										node._provinces.push(province);
-								}
-								else if (operator == '-')
-								{
-									var index = node._provinces.indexOf(province);
-									if (index != -1)
-										node._provinces.splice(index, 1)
-								}
+								var namedIndex = namedNode._provinces.indexOf(province);
+								if (operator == '+' && namedIndex == -1)
+									namedNode._provinces.push(province);
+								else if (operator == '-' && namedIndex != -1)
+									namedNode._provinces.splice(namedIndex, 1);
 							}
-							if (saveNodes.indexOf(environmentData) == -1)
-								saveNodes.push(environmentData);
+							environmentChanged = true;
 						}
 					}
-					else
+					else if (getProvinceState(province)[key] != multiData.data[key])
 					{
-						if (province.data.data[key] != multiData.data[key])
-							changed = true
-
-						province.data.data[key] = multiData.data[key];
-
-						if (saveNodes.indexOf(province) == -1)
-							saveNodes.push(province);
+						modService.setProvinceHistoryValue(province, key, multiData.data[key]);
+						addSaveNode(province);
 					}
-				}
-			}.bind(this));
+				});
+			});
+		}
+		catch (error)
+		{
+			handleMapError(error);
+			return $q.when();
+		}
 
-			for (var i = 0; i < saveNodes.length; i++)
-				promises.push(modService.saveData(saveNodes[i]));
+		if (environmentChanged)
+			addSaveNode(environmentData);
+
+		var promises = [];
+		angular.forEach(saveNodes, function (node) {
+			promises.push(modService.saveData(node));
 		});
-
-		$q.all(promises).then(function () {
+		if (terrainProvinces.length)
+			promises.push(saveProvinceTerrain(terrainProvinces));
+		return $q.all(promises).then(function () {
 			if ($scope.labelView != 'none')
 			{
 				var currentView = $scope.labelView;
@@ -1856,8 +3241,8 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 					$scope.view = currentView;
 				});
 			}
-			$scope.refreshSelection();
-		});
+			return $scope.refreshSelection();
+		}, handleMapError);
 	};
 
 
@@ -1874,124 +3259,154 @@ myMod.controller('MapCheck', ['$scope', 'modService', 'mapDrawService', '$timeou
 
 		$scope.messages = '';
 
-		$q.all({
-			mappings: modService.getData(modService.data.map.colorMapping),
-			info: modService.getData(modService.data.map.provinces.info),
-		}).then(function (data) {
-			var mappings = data.mappings.byColor;
-			var mapColors = data.info.analytics.colors;
-			// Iterate over current mapping
-			for (var colorNum in mappings)
-			{
-				if (mappings.hasOwnProperty(colorNum))
+		return modService.traceMapAnalysis('Compare with current', function () {
+			return $q.all({
+				mappings: modService.getData(modService.data.map.colorMapping),
+				info: modService.getData(modService.data.map.provinces.info),
+			}).then(function (data) {
+				var mappings = data.mappings.byColor;
+				var mapColors = data.info.analytics.colors;
+				var mappingsByColor = {};
+				for (var mappingId in data.mappings.byId)
 				{
-					if (!mapColors[colorNum])
+					if (data.mappings.byId.hasOwnProperty(mappingId))
 					{
-						// Color no longer present in map
+						var mapping = data.mappings.byId[mappingId];
+						if (!mappingsByColor[mapping.colorNum])
+							mappingsByColor[mapping.colorNum] = [];
+						mappingsByColor[mapping.colorNum].push(mapping);
+					}
+				}
 
-						//$scope.messages += 'Mapping '+ mappings[colorNum].id +' no longer exists.' + "\n";
+				var fallbackAreasByColor = mapAnalyzeService.findUniqueColorFallbacks(mappingsByColor, mapColors);
 
-						var closest = null;
-						var closestDistance = 0;
-						for (var mapColorNum in mapColors)
+				// Iterate over current mapping
+				for (var colorNum in mappings)
+				{
+					if (mappings.hasOwnProperty(colorNum))
+					{
+						var matchedArea = mapColors[colorNum] || fallbackAreasByColor[colorNum];
+						if (!matchedArea)
 						{
-							if (mapColors.hasOwnProperty(mapColorNum) && !mapColors[mapColorNum].matched && !mappings[mapColorNum] && mappings[colorNum].center)
-							{
-								distance = Victor.fromArray(mappings[colorNum].center).distance(Victor.fromArray(mapColors[mapColorNum].center));
+							// Color no longer present in map
 
-								if (closest == null || distance < closestDistance)
+							//$scope.messages += 'Mapping '+ mappings[colorNum].id +' no longer exists.' + "\n";
+
+							var closest = null;
+							var closestDistance = 0;
+							for (var mapColorNum in mapColors)
+							{
+								if (mapColors.hasOwnProperty(mapColorNum) && !mapColors[mapColorNum].matched && !mappings[mapColorNum] && mappings[colorNum].center)
 								{
-									closest = mapColors[mapColorNum];
-									closestDistance = distance;
+									distance = Victor.fromArray(mappings[colorNum].center).distance(Victor.fromArray(mapColors[mapColorNum].center));
+
+									if (closest == null || distance < closestDistance)
+									{
+										closest = mapColors[mapColorNum];
+										closestDistance = distance;
+									}
 								}
 							}
-						}
 
-						if (closest && closestDistance < $scope.closestArea)
-						{
-							mappings[colorNum].matched = closest;
-							mappings[colorNum].matchDistance = closestDistance;
-							closest.matched = mappings[colorNum];
-							var msg = 'Missing mapping '+ mappings[colorNum].id +' ('+ mappings[colorNum].name +') matched to closest new color '+ closest.quadNr +' at distance '+ closestDistance + ".\n";
-							$scope.labels.push({text: closest.quadNr, x: closest.center[0], y: closest.center[1], extentMin: closest.extentMin, extentSize: closest.extentSize, message: msg});
-							$scope.messages += msg;
+							if (closest && closestDistance < $scope.closestArea)
+							{
+								mappings[colorNum].matched = closest;
+								mappings[colorNum].matchDistance = closestDistance;
+								closest.matched = mappings[colorNum];
+								var msg = 'Missing mapping '+ mappings[colorNum].id +' ('+ mappings[colorNum].name +') matched to closest new color '+ closest.quadNr +' at distance '+ closestDistance + ".\n";
+								$scope.labels.push({text: closest.quadNr, x: closest.center[0], y: closest.center[1], extentMin: closest.extentMin, extentSize: closest.extentSize, message: msg});
+								$scope.messages += msg;
+							}
+							else
+							{
+								$scope.messages += 'Mapping '+ mappings[colorNum].id +' ('+ mappings[colorNum].name +') no longer exists.' + "\n";
+							}
 						}
 						else
 						{
-							$scope.messages += 'Mapping '+ mappings[colorNum].id +' ('+ mappings[colorNum].name +') no longer exists.' + "\n";
+							// Color present in map
+							mappings[colorNum].matched = matchedArea;
+							matchedArea.matched = mappings[colorNum];
+
+							var msg = null;
+							$scope.labels.push({text: matchedArea.quadNr, x: matchedArea.center[0], y: matchedArea.center[1], extentMin: matchedArea.extentMin, extentSize: matchedArea.extentSize, message: msg, messageType: 'note'});
 						}
 					}
-					else
-					{
-						// Color present in map
-						mappings[colorNum].matched = mapColors[colorNum];
-						mapColors[colorNum].matched = mappings[colorNum];
+				}
 
-						var msg = null;
-						if (mappings[colorNum].center[0] != mapColors[colorNum].center[0] && mappings[colorNum].center[1] != mapColors[colorNum].center[1])
+				// Craft new definitions
+				var defs = 'province;red;green;blue;x;x' + "\n";
+				for (var id in data.mappings.byId)
+				{
+					if (data.mappings.byId.hasOwnProperty(id))
+					{
+						var m = data.mappings.byId[id];
+
+						if (m.matched)
+							defs += m.id +';'+ m.matched.r +';'+ m.matched.g +';'+ m.matched.b +';'+ (m.matchedDistance ? m.name +' (moved '+ matchDistance +')': m.name) +';'+ m.matched.center[0] + ',' + m.matched.center[1] +"\n";
+						else
+							defs += m.id +';'+ m.r +';'+ m.g +';'+ m.b +';'+ (m.name.replace(' (non-exist)', '') + ' (non-exist)') +';'+ m.center +"\n";
+					}
+				}
+
+				var maxId = data.mappings.byId.length - 1;
+				var stayedSame = 0;
+				// find new, not matched colors, add 'hasMessage' markings
+				for (var colorNum in mapColors)
+				{
+					if (mapColors.hasOwnProperty(colorNum))
+					{
+						var c = mapColors[colorNum];
+						c.hasMessage = false;
+
+						if (!c.matched)
 						{
-							//msg = 'Moved '+ mapColors[colorNum].quadNr +' ('+ mappings[colorNum].name +')';
-							//$scope.messages += msg;
+							maxId++;
+							c.hasMessage = true;
+							var msg = 'Color '+ maxId +' ('+ c.count +' pixels) is new.' + "\n";
+							$scope.messages += msg;
+							defs += maxId +';'+ c.r +';'+ c.g +';'+ c.b +';(new);'+ c.center[0] + ',' + c.center[1] +"\n";
+
+							$scope.labels.push({text: maxId, x: c.center[0], y: c.center[1], extentMin: c.extentMin, extentSize: c.extentSize, message: msg});
 						}
-						$scope.labels.push({text: mapColors[colorNum].quadNr, x: mapColors[colorNum].center[0], y: mapColors[colorNum].center[1], extentMin: mapColors[colorNum].extentMin, extentSize: mapColors[colorNum].extentSize, message: msg, messageType: 'note'});
+						else
+							stayedSame++;
 					}
 				}
-			}
+				$scope.messages += stayedSame +' entries stayed the same.';
 
-			// Craft new definitions
-			var defs = 'province;red;green;blue;x;x' + "\n";
-			for (var id in data.mappings.byId)
-			{
-				if (data.mappings.byId.hasOwnProperty(id))
-				{
-					var m = data.mappings.byId[id];
-
-					if (m.matched)
-						defs += m.id +';'+ m.matched.r +';'+ m.matched.g +';'+ m.matched.b +';'+ (m.matchedDistance ? m.name +' (moved '+ matchDistance +')': m.name) +';'+ m.matched.center[0] + ',' + m.matched.center[1] +"\n";
-					else
-						defs += m.id +';'+ m.r +';'+ m.g +';'+ m.b +';'+ (m.name.replace(' (non-exist)', '') + ' (non-exist)') +';'+ m.center +"\n";
-				}
-			}
-
-			var maxId = data.mappings.byId.length - 1;
-			var stayedSame = 0;
-			// find new, not matched colors, add 'hasMessage' markings
-			for (var colorNum in mapColors)
-			{
-				if (mapColors.hasOwnProperty(colorNum))
-				{
-					var c = mapColors[colorNum];
-					c.hasMessage = false;
-
-					if (!c.matched)
-					{
-						maxId++;
-						c.hasMessage = true;
-						var msg = 'Color '+ maxId +' ('+ c.count +' pixels) is new.' + "\n";
-						$scope.messages += msg;
-						defs += maxId +';'+ c.r +';'+ c.g +';'+ c.b +';(new);'+ c.center[0] + ',' + c.center[1] +"\n";
-
-						$scope.labels.push({text: maxId, x: c.center[0], y: c.center[1], extentMin: c.extentMin, extentSize: c.extentSize, message: msg});
-					}
-					else
-						stayedSame++;
-				}
-			}
-			$scope.messages += stayedSame +' entries stayed the same.';
-
-			$scope.output = defs;
-			$scope.loading = false;
-		}, modService.errorCallback);
+				$scope.output = defs;
+				$scope.loading = false;
+			});
+		}).then(null, modService.errorCallback);
 	};
 }]);
 
-myMod.directive('sizeElement', function ($window) {
+myMod.directive('sizeElement', function ($window, $timeout) {
 	return {
 		scope:true,
 		priority: 0,
 		link: function (scope, element) {
-			scope.$watch(function(){return $(element).height(); }, function(newValue, oldValue) {
-				scope.height=$(element).height();
+			var elementNode = element[0];
+			var updateHeight = function () {
+				var height = elementNode.getBoundingClientRect().height;
+				if (!height || !isFinite(height) || Math.abs((scope.height || 0) - height) < 0.5)
+					return;
+				scope.$evalAsync(function () {
+					scope.height = height;
+				});
+			};
+			var resizeObserver = $window.ResizeObserver
+				? new $window.ResizeObserver(updateHeight) : null;
+			if (resizeObserver)
+				resizeObserver.observe(elementNode);
+
+			angular.element($window).on('resize', updateHeight);
+			$timeout(updateHeight, 0, false);
+			scope.$on('$destroy', function () {
+				if (resizeObserver)
+					resizeObserver.disconnect();
+				angular.element($window).off('resize', updateHeight);
 			});
 		}
 	};
@@ -2012,6 +3427,18 @@ myMod.controller('PanZoom', ['$scope', 'PanZoomService', 'hotkeys', '$rootScope'
 		haltSpeed: 0,
 		panOnClickDrag: true,
 		//zoomOnMouseWheel: false
+	};
+	$scope.mapLabelLayerStyle = function (zoomLevel) {
+		var config = $scope.panzoomConfig;
+		var currentZoomLevel = isFinite(zoomLevel) ? zoomLevel : config.neutralZoomLevel;
+		var maxZoomLevel = Math.max(1, config.zoomLevels - 1);
+		var clampedZoomLevel = Math.max(0, Math.min(maxZoomLevel, currentZoomLevel));
+		var minScreenFontSize = 6;
+		var maxScreenFontSize = 14;
+		var screenFontSize = minScreenFontSize
+			+ (maxScreenFontSize - minScreenFontSize) * clampedZoomLevel / maxZoomLevel;
+		var mapScale = Math.pow(config.scalePerZoomLevel, currentZoomLevel - config.neutralZoomLevel);
+		return {'font-size': (screenFontSize / mapScale) +'px'};
 	};
 
 	hotkeys.bindTo($scope).add({
